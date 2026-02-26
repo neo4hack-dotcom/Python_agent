@@ -1,0 +1,25 @@
+# ============================================================
+# Dépendances Python — compatibilité maximale Windows/Linux
+# Python 3.8+ requis
+# ============================================================
+
+# Oracle (mode THIN — aucun Oracle Client requis)
+# Décommentez si vous utilisez Oracle :
+# python-oracledb>=2.0.0
+
+# Couleurs terminal Windows (facultatif mais recommandé)
+colorama>=0.4.6
+
+# ============================================================
+# LangGraph — orchestration multi-agents avec StateGraph
+# ============================================================
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# ============================================================
+# Dépendances stdlib (aucune installation requise) :
+#   - ClickHouse : API HTTP native (urllib)
+#   - LLM        : HTTP pur (urllib)
+#   - Config     : JSON
+#   - Logging    : logging
+# ============================================================
