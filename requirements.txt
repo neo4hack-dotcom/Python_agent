@@ -17,6 +17,11 @@ langgraph>=0.2.0
 langchain-core>=0.3.0
 
 # ============================================================
+# Interface graphique web (ui.py)
+# ============================================================
+gradio>=4.0.0
+
+# ============================================================
 # Dépendances stdlib (aucune installation requise) :
 #   - ClickHouse : API HTTP native (urllib)
 #   - LLM        : HTTP pur (urllib)
