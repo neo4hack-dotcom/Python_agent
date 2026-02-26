@@ -1,0 +1,59 @@
+{
+  "_comment": "Configuration principale — modifiez les sections llm et databases selon votre environnement",
+
+  "llm": {
+    "_comment_api_type": "Valeurs possibles: 'ollama', 'openai' (OpenAI-compatible: LM Studio, vLLM, text-gen-webui)",
+    "api_type":      "ollama",
+    "base_url":      "http://localhost:11434",
+    "model":         "llama3.1:8b",
+    "temperature":   0.1,
+    "max_tokens":    4096,
+    "timeout":       120,
+    "api_key":       "not-needed"
+  },
+
+  "databases": {
+    "clickhouse": {
+      "enabled":   true,
+      "host":      "localhost",
+      "port":      8123,
+      "database":  "default",
+      "user":      "default",
+      "password":  "",
+      "secure":    false,
+      "timeout":   30
+    },
+    "oracle": {
+      "enabled":      false,
+      "host":         "localhost",
+      "port":         1521,
+      "service_name": "ORCL",
+      "user":         "system",
+      "password":     "",
+      "thick_mode":   false,
+      "timeout":      30
+    }
+  },
+
+  "agents": {
+    "max_steps":         20,
+    "reflection_interval": 5,
+    "parallel_agents":   1,
+    "result_dir":        "./results"
+  },
+
+  "security": {
+    "_comment": "allow_write_queries=false bloque INSERT/UPDATE/DELETE/DROP/CREATE",
+    "allow_write_queries": false,
+    "max_rows_returned":   1000,
+    "query_timeout":       30
+  },
+
+  "logging": {
+    "_comment_level": "Niveaux: DEBUG, INFO, WARN, ERROR",
+    "level":    "INFO",
+    "file":     "results/agent_run.log",
+    "console":  true,
+    "colors":   true
+  }
+}
