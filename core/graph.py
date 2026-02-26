@@ -42,6 +42,14 @@ class GraphState(TypedDict):
     error:          Optional[str]        # Error message if something went wrong
 
 
+# All routable agent names (original + ClickHouse specialists)
+_ALL_AGENT_NAMES = {
+    "analyst", "quality", "pattern", "query",
+    "sql_analyst", "clickhouse_generic", "clickhouse_table_manager",
+    "clickhouse_writer", "clickhouse_specific", "text_to_sql_translator",
+}
+
+
 # --------------------------------------------------------------------------- #
 #  Graph factory                                                               #
 # --------------------------------------------------------------------------- #
@@ -89,10 +97,18 @@ def create_agent_graph(
             "You are an AI orchestrator for data analysis.\n"
             "Given the task below, decide which specialized agents to run.\n\n"
             "Available agents:\n"
-            "  - analyst : data statistics, trends, KPIs, distributions\n"
-            "  - quality : data quality (nulls, duplicates, outliers, format checks)\n"
-            "  - pattern : pattern discovery, correlations, anomaly detection\n"
-            "  - query   : SQL query building and optimization\n\n"
+            "  --- General purpose ---\n"
+            "  - analyst                  : data statistics, trends, KPIs, distributions\n"
+            "  - quality                  : data quality (nulls, duplicates, outliers)\n"
+            "  - pattern                  : pattern discovery, correlations, anomaly detection\n"
+            "  - query                    : SQL query building and optimization\n"
+            "  --- ClickHouse specialists ---\n"
+            "  - sql_analyst              : expert CH SQL generation with preflight EXPLAIN\n"
+            "  - clickhouse_generic       : DAG-driven deep ClickHouse analysis\n"
+            "  - clickhouse_table_manager : DDL admin (CREATE/ALTER tables)\n"
+            "  - clickhouse_writer        : sandboxed DML (INSERT into agent_ tables)\n"
+            "  - clickhouse_specific      : parameterized template reports (P1-P4)\n"
+            "  - text_to_sql_translator   : natural-language to ClickHouse SQL\n\n"
             f"Task: {task}\n\n"
             "Reply ONLY with a valid JSON object:\n"
             "{\n"
@@ -101,7 +117,8 @@ def create_agent_graph(
             "}\n\n"
             "Rules:\n"
             "- Include only agents relevant to the task\n"
-            "- Order them logically (e.g. analyst before pattern)\n"
+            "- Order them logically (e.g. sql_analyst before clickhouse_generic)\n"
+            "- Prefer ClickHouse specialists for ClickHouse-specific tasks\n"
             "- Minimum 1 agent, maximum 4 agents\n"
         )
 
@@ -110,7 +127,7 @@ def create_agent_graph(
             raw      = llm_client.complete(messages)
             decision = llm_client._extract_json(raw)
             plan     = decision.get("plan", ["analyst"]) if decision else ["analyst"]
-            valid    = {"analyst", "quality", "pattern", "query"}
+            valid    = _ALL_AGENT_NAMES
             plan     = [a for a in plan if a in valid]
             if not plan:
                 plan = ["analyst"]
@@ -147,20 +164,36 @@ def create_agent_graph(
     #  Generic agent runner                                                #
     # ------------------------------------------------------------------ #
 
+    def _merge_agent_result(
+        agent_name: str,
+        result: Dict[str, Any],
+        state: GraphState,
+        elapsed: float,
+    ) -> GraphState:
+        """Merge a completed agent result into the shared graph state."""
+        logger.manager_result(agent_name, f"{result.get('summary', 'done')} ({elapsed}s)")
+        new_sub_results = {**state.get("sub_results", {}), agent_name: result}
+        new_done        = state.get("agents_done", []) + [agent_name]
+        ctx_parts = []
+        for name, res in new_sub_results.items():
+            if res.get("summary"):
+                ctx_parts.append(f"[{name.upper()} AGENT] {res['summary']}")
+        return {
+            **state,
+            "sub_results":    new_sub_results,
+            "agents_done":    new_done,
+            "shared_context": "\n".join(ctx_parts),
+        }
+
     def _run_agent(agent_cls, agent_name: str, state: GraphState) -> GraphState:
-        """Instantiate and run a sub-agent, then merge its results into state."""
-        # Lazy imports to avoid circular deps at module level
+        """Instantiate a base agent and run it, then merge results into state."""
         task    = state["task"]
         context = state.get("shared_context", "")
-
         logger.manager_dispatch(agent_name, task)
         t0 = time.time()
-
         try:
-            agent = agent_cls(
-                llm=llm_client,
-                db=db_manager,
-                logger=logger,
+            agent  = agent_cls(
+                llm=llm_client, db=db_manager, logger=logger,
                 max_steps=max(8, max_steps // 2),
                 allow_write=allow_write,
                 max_rows=max_rows,
@@ -169,32 +202,28 @@ def create_agent_graph(
         except Exception as exc:
             logger.error(f"Agent '{agent_name}' raised: {exc}")
             result = {
-                "answer":    f"Agent {agent_name} encountered an error: {exc}",
-                "summary":   f"{agent_name} failed: {exc}",
-                "findings":  {},
-                "steps_used": 0,
+                "answer": f"Agent {agent_name} encountered an error: {exc}",
+                "summary": f"{agent_name} failed: {exc}",
+                "findings": {}, "steps_used": 0,
             }
+        return _merge_agent_result(agent_name, result, state, round(time.time() - t0, 1))
 
-        elapsed = round(time.time() - t0, 1)
-        logger.manager_result(agent_name, f"{result.get('summary', 'done')} ({elapsed}s)")
-
-        # Accumulate results and update shared context
-        new_sub_results = {**state.get("sub_results", {}), agent_name: result}
-        new_done        = state.get("agents_done", []) + [agent_name]
-
-        # Build cumulative context for subsequent agents
-        ctx_parts = []
-        for name, res in new_sub_results.items():
-            if res.get("summary"):
-                ctx_parts.append(f"[{name.upper()} AGENT] {res['summary']}")
-        new_context = "\n".join(ctx_parts)
-
-        return {
-            **state,
-            "sub_results":    new_sub_results,
-            "agents_done":    new_done,
-            "shared_context": new_context,
-        }
+    def _run_agent_instance(agent, agent_name: str, state: GraphState) -> GraphState:
+        """Run a pre-built agent instance (used for CH specialists), merge results."""
+        task    = state["task"]
+        context = state.get("shared_context", "")
+        logger.manager_dispatch(agent_name, task)
+        t0 = time.time()
+        try:
+            result = agent.run(task, context=context)
+        except Exception as exc:
+            logger.error(f"Agent '{agent_name}' raised: {exc}")
+            result = {
+                "answer": f"Agent {agent_name} encountered an error: {exc}",
+                "summary": f"{agent_name} failed: {exc}",
+                "findings": {}, "steps_used": 0,
+            }
+        return _merge_agent_result(agent_name, result, state, round(time.time() - t0, 1))
 
     # ------------------------------------------------------------------ #
     #  Agent nodes                                                         #
@@ -215,6 +244,38 @@ def create_agent_graph(
     def query_node(state: GraphState) -> GraphState:
         from agents.query_agent import QueryAgent
         return _run_agent(QueryAgent, "query", state)
+
+    # ---- ClickHouse specialist nodes ----------------------------------------
+
+    def sql_analyst_node(state: GraphState) -> GraphState:
+        from agents.clickhouse import SQLAnalystAgent
+        agent = SQLAnalystAgent.from_config(llm_client, db_manager, logger, config)
+        return _run_agent_instance(agent, "sql_analyst", state)
+
+    def clickhouse_generic_node(state: GraphState) -> GraphState:
+        from agents.clickhouse import ClickHouseGenericAgent
+        agent = ClickHouseGenericAgent.from_config(llm_client, db_manager, logger, config)
+        return _run_agent_instance(agent, "clickhouse_generic", state)
+
+    def clickhouse_table_manager_node(state: GraphState) -> GraphState:
+        from agents.clickhouse import ClickHouseTableManagerAgent
+        agent = ClickHouseTableManagerAgent.from_config(llm_client, db_manager, logger, config)
+        return _run_agent_instance(agent, "clickhouse_table_manager", state)
+
+    def clickhouse_writer_node(state: GraphState) -> GraphState:
+        from agents.clickhouse import ClickHouseWriterAgent
+        agent = ClickHouseWriterAgent.from_config(llm_client, db_manager, logger, config)
+        return _run_agent_instance(agent, "clickhouse_writer", state)
+
+    def clickhouse_specific_node(state: GraphState) -> GraphState:
+        from agents.clickhouse import ClickHouseSpecificAgent
+        agent = ClickHouseSpecificAgent.from_config(llm_client, db_manager, logger, config)
+        return _run_agent_instance(agent, "clickhouse_specific", state)
+
+    def text_to_sql_node(state: GraphState) -> GraphState:
+        from agents.clickhouse import TextToSQLAgent
+        agent = TextToSQLAgent.from_config(llm_client, db_manager, logger, config)
+        return _run_agent_instance(agent, "text_to_sql_translator", state)
 
     # ------------------------------------------------------------------ #
     #  Aggregate node                                                      #
@@ -275,28 +336,50 @@ def create_agent_graph(
 
     graph = StateGraph(GraphState)
 
+    # Original agent nodes
     graph.add_node("plan",      plan_node)
     graph.add_node("analyst",   analyst_node)
     graph.add_node("quality",   quality_node)
     graph.add_node("pattern",   pattern_node)
     graph.add_node("query",     query_node)
+    # ClickHouse specialist nodes
+    graph.add_node("sql_analyst",              sql_analyst_node)
+    graph.add_node("clickhouse_generic",       clickhouse_generic_node)
+    graph.add_node("clickhouse_table_manager", clickhouse_table_manager_node)
+    graph.add_node("clickhouse_writer",        clickhouse_writer_node)
+    graph.add_node("clickhouse_specific",      clickhouse_specific_node)
+    graph.add_node("text_to_sql_translator",   text_to_sql_node)
+    # Aggregation
     graph.add_node("aggregate", aggregate_node)
 
     graph.set_entry_point("plan")
 
     _agent_targets = {
+        # Original
         "analyst":   "analyst",
         "quality":   "quality",
         "pattern":   "pattern",
         "query":     "query",
+        # ClickHouse specialists
+        "sql_analyst":              "sql_analyst",
+        "clickhouse_generic":       "clickhouse_generic",
+        "clickhouse_table_manager": "clickhouse_table_manager",
+        "clickhouse_writer":        "clickhouse_writer",
+        "clickhouse_specific":      "clickhouse_specific",
+        "text_to_sql_translator":   "text_to_sql_translator",
+        # Terminal
         "aggregate": "aggregate",
     }
 
-    # From plan_node: route to first agent or straight to aggregate
+    # From plan_node: route to first agent or aggregate
     graph.add_conditional_edges("plan", route, _agent_targets)
 
-    # From each agent node: route to next agent or to aggregate
-    for _node in ["analyst", "quality", "pattern", "query"]:
+    # From every agent node: route to next agent or aggregate
+    for _node in [
+        "analyst", "quality", "pattern", "query",
+        "sql_analyst", "clickhouse_generic", "clickhouse_table_manager",
+        "clickhouse_writer", "clickhouse_specific", "text_to_sql_translator",
+    ]:
         graph.add_conditional_edges(_node, route, _agent_targets)
 
     graph.add_edge("aggregate", END)

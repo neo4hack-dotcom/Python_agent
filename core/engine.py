@@ -257,9 +257,11 @@ class AgentEngine:
     # ------------------------------------------------------------------ #
 
     def _build_system_prompt(self) -> str:
+        # Use CH-extended tool list if the base agent injected it, else fall back
+        tool_defs  = getattr(self, "_ch_tool_defs", None) or TOOL_DEFINITIONS
         tools_json = json.dumps(
             [{"name": t["name"], "description": t["description"], "params": t.get("params", {})}
-             for t in TOOL_DEFINITIONS],
+             for t in tool_defs],
             indent=2, ensure_ascii=False
         )
         return REACT_SYSTEM_TEMPLATE.format(

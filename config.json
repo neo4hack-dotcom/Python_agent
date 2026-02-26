@@ -62,5 +62,66 @@
     "file":     "results/agent_run.log",
     "console":  true,
     "colors":   true
+  },
+
+  "clickhouse_agents": {
+    "_comment": "Configuration for the ClickHouse specialist agent suite",
+
+    "allow_ddl": false,
+    "_comment_ddl": "Set true to enable create_ch_table and alter_ch_table (DDL guardrails still apply)",
+
+    "table_prefix": "agent_",
+    "_comment_prefix": "write_agent_table enforces this prefix on all INSERT targets",
+
+    "ddl_protected_operations": ["DROP", "TRUNCATE"],
+    "_comment_protected": "These DDL keywords are always blocked regardless of allow_ddl",
+
+    "templates": {
+      "_comment": "Custom templates merged with built-ins P1–P4. Format: {name, description, params, sql}",
+      "P5": {
+        "name": "session_duration_percentiles",
+        "description": "P50/P90/P99 session duration by day using quantileTDigest",
+        "params": {
+          "table":        "Sessions table name",
+          "duration_col": "Session duration column (numeric, seconds)",
+          "date_col":     "Session date column",
+          "start_date":   "Start date YYYY-MM-DD",
+          "end_date":     "End date YYYY-MM-DD"
+        },
+        "sql": "SELECT\n    toDate({date_col}) AS day,\n    quantileTDigest(0.50)({duration_col}) AS p50_s,\n    quantileTDigest(0.90)({duration_col}) AS p90_s,\n    quantileTDigest(0.99)({duration_col}) AS p99_s\nFROM {table}\nWHERE toDate({date_col}) >= '{start_date}'\n  AND toDate({date_col}) <  '{end_date}'\nGROUP BY day\nORDER BY day ASC\nWITH FILL FROM toDate('{start_date}') TO toDate('{end_date}') STEP 1"
+      }
+    },
+
+    "semantic_layer": {
+      "_comment": "Business vocabulary for the text_to_sql_translator agent",
+      "terms": {
+        "active_user":  "user who has performed at least 1 event in the last 30 days",
+        "conversion":   "user who completed the target event after entering the funnel",
+        "churn":        "user active 60+ days ago but not in the last 30 days",
+        "session":      "continuous sequence of events with gap < 30 minutes",
+        "new_user":     "user whose first event occurred in the current period",
+        "power_user":   "user in the top decile by event count in the period"
+      },
+      "aliases": {
+        "_comment": "Logical business name -> physical column name mapping",
+        "user":         "user_id",
+        "event":        "event_name",
+        "timestamp":    "created_at",
+        "revenue":      "amount_usd",
+        "country":      "country_code"
+      },
+      "rules": {
+        "_comment": "KPI formulas using ClickHouse SQL fragments",
+        "DAU":   "uniqHLL12(user_id) per toDate(created_at)",
+        "ARPU":  "sum(amount_usd) / uniqHLL12(user_id)",
+        "CVR":   "uniqHLL12If(user_id, event_name = 'purchase') / uniqHLL12(user_id)",
+        "LTV":   "sum(amount_usd) GROUP BY user_id ORDER BY sum DESC"
+      },
+      "dicts": {
+        "_comment": "ClickHouse external dictionaries accessible via dictGet()",
+        "geo_dict":     "maps country_code -> country_name, continent, region",
+        "product_dict": "maps product_id -> product_name, category, price_tier"
+      }
+    }
   }
 }

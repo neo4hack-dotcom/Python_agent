@@ -45,9 +45,10 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> Dict[str, Any]:
     with open(path, encoding="utf-8") as f:
         raw = f.read()
 
-    # Strip // comments (JSON doesn't support them natively)
+    # Strip // comments (JSON doesn't support them natively).
+    # Only strip // that appear after whitespace (not inside strings like http://)
     import re
-    raw = re.sub(r'//[^\n]*', '', raw)
+    raw = re.sub(r'(?m)(?<=\s)//[^\n]*', '', raw)
     # Strip _comment keys
     config = json.loads(raw)
 
@@ -103,9 +104,19 @@ Exemples:
     )
     parser.add_argument(
         "--agent", "-a",
-        choices=["manager", "analyst", "quality", "pattern", "query"],
+        choices=[
+            "manager", "analyst", "quality", "pattern", "query",
+            # ClickHouse specialist agents
+            "sql_analyst", "clickhouse_generic", "clickhouse_table_manager",
+            "clickhouse_writer", "clickhouse_specific", "text_to_sql_translator",
+        ],
         default="manager",
-        help="Agent à utiliser (défaut: manager)",
+        help=(
+            "Agent à utiliser (défaut: manager). "
+            "Agents ClickHouse: sql_analyst, clickhouse_generic, "
+            "clickhouse_table_manager, clickhouse_writer, "
+            "clickhouse_specific, text_to_sql_translator"
+        ),
     )
     parser.add_argument(
         "--graph",
@@ -183,17 +194,28 @@ def mode_check_connections(config: dict):
 
 
 def mode_list_tools():
-    """Print all available tools."""
+    """Print all available tools (base + ClickHouse-specific)."""
     from core.tools import TOOL_DEFINITIONS
-    print("\n=== AVAILABLE TOOLS ===\n")
-    for t in TOOL_DEFINITIONS:
-        print(f"  {t['name']}")
-        print(f"    {t['description']}")
-        if t.get("params"):
-            for p, desc in t["params"].items():
-                req = "(required)" if p in t.get("required", []) else "(optional)"
-                print(f"      {p}: {desc} {req}")
-        print()
+    from core.clickhouse_tools import CH_TOOL_DEFINITIONS
+    # CH_TOOL_DEFINITIONS includes base tools + CH-only ones; deduplicate by name
+    base_names = {t["name"] for t in TOOL_DEFINITIONS}
+    ch_only    = [t for t in CH_TOOL_DEFINITIONS if t["name"] not in base_names]
+
+    def _print_tools(tool_list):
+        for t in tool_list:
+            print(f"  {t['name']}")
+            print(f"    {t['description']}")
+            if t.get("params"):
+                for p, desc in t["params"].items():
+                    req = "(required)" if p in t.get("required", []) else "(optional)"
+                    print(f"      {p}: {desc} {req}")
+            print()
+
+    print("\n=== AVAILABLE TOOLS (Base) ===\n")
+    _print_tools(TOOL_DEFINITIONS)
+
+    print("\n=== AVAILABLE TOOLS (ClickHouse-Specific) ===\n")
+    _print_tools(ch_only)
 
 
 def mode_interactive(config: dict, default_agent: str = "manager", use_graph: bool = False):
@@ -263,12 +285,14 @@ def run_task(
         from agents.quality_agent import QualityAgent
         from agents.pattern_agent import PatternAgent
         from agents.query_agent   import QueryAgent
+        from agents.clickhouse    import AGENT_REGISTRY as CH_REGISTRY
 
         agent_map = {
             "analyst": AnalystAgent,
             "quality": QualityAgent,
             "pattern": PatternAgent,
             "query":   QueryAgent,
+            **CH_REGISTRY,
         }
         AgentClass = agent_map.get(agent)
         if AgentClass is None:
@@ -282,12 +306,19 @@ def run_task(
             log_file=config.get("logging", {}).get("file"),
             colors=config.get("logging", {}).get("colors", True),
         )
-        instance = AgentClass(
-            llm=llm, db=db, logger=logger,
-            max_steps=config.get("agents", {}).get("max_steps", 20),
-            allow_write=allow_write,
-            max_rows=config.get("security", {}).get("max_rows_returned", 1000),
-        )
+
+        # ClickHouse specialist agents use from_config() for richer init
+        if agent in CH_REGISTRY:
+            instance = AgentClass.from_config(llm=llm, db=db, logger=logger, config=config)
+            if allow_write:
+                instance.tool_executor.allow_write = True
+        else:
+            instance = AgentClass(
+                llm=llm, db=db, logger=logger,
+                max_steps=config.get("agents", {}).get("max_steps", 20),
+                allow_write=allow_write,
+                max_rows=config.get("security", {}).get("max_rows_returned", 1000),
+            )
         result = instance.run(task)
 
     # Save to file if requested
