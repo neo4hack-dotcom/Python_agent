@@ -6,7 +6,7 @@ All ClickHouse agents inherit from this class.
 It wires the ClickHouseToolExecutor instead of the generic ToolExecutor,
 and injects the LLM client for tools that need it (dag_plan, nl_to_sql).
 """
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from core.llm_client        import LLMClient
 from core.db_manager        import DBManager
@@ -33,6 +33,7 @@ class ClickHouseBaseAgent:
     templates    : Custom query templates merged with built-ins
     semantic_layer: Business terms / column aliases for nl_to_sql
     dispatch_cb  : Callable for dispatch_agent tool
+    step_callback: Optional callable(dict) for UI step streaming
     """
 
     name:           str = "ClickHouseBaseAgent"
@@ -52,6 +53,7 @@ class ClickHouseBaseAgent:
         templates:      Optional[Dict] = None,
         semantic_layer: Optional[Dict] = None,
         dispatch_cb             = None,
+        step_callback:  Optional[Callable] = None,
     ):
         self.llm    = llm
         self.db     = db
@@ -86,6 +88,7 @@ class ClickHouseBaseAgent:
             mission=self.mission,
             max_steps=max_steps,
             reflection_interval=5,
+            step_callback=step_callback,
         )
 
         # Patch engine to expose the CH-extended tool list
@@ -101,6 +104,7 @@ class ClickHouseBaseAgent:
         db:     DBManager,
         logger: AgentLogger,
         config: dict,
+        step_callback: Optional[Callable] = None,
     ) -> "ClickHouseBaseAgent":
         """Construct the agent from a full config dict."""
         ch_cfg      = config.get("clickhouse_agents", {})
@@ -118,4 +122,5 @@ class ClickHouseBaseAgent:
             table_prefix=ch_cfg.get("table_prefix", "agent_"),
             templates=ch_cfg.get("templates", {}),
             semantic_layer=ch_cfg.get("semantic_layer", {}),
+            step_callback=step_callback,
         )

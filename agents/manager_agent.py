@@ -17,7 +17,7 @@ import json
 import time
 import os
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from datetime import datetime
 
 from core.llm_client  import LLMClient
@@ -25,7 +25,7 @@ from core.db_manager  import DBManager
 from core.memory      import MemoryManager
 from core.tools       import ToolExecutor
 from core.engine      import AgentEngine
-from agents.base_agent    import BaseAgent
+from agents.base_agent    import BaseAgent, CustomAgent
 from agents.analyst_agent import AnalystAgent
 from agents.quality_agent import QualityAgent
 from agents.pattern_agent import PatternAgent
@@ -48,8 +48,10 @@ class ManagerAgent:
     Peut être utilisé directement ou via main.py.
     """
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, step_callback: Optional[Callable] = None):
         self.config = config
+        self._step_callback = step_callback
+
         self.logger = AgentLogger(
             name="Manager",
             log_file=config.get("logging", {}).get("file"),
@@ -67,6 +69,13 @@ class ManagerAgent:
         self.max_rows        = int(sec_cfg.get("max_rows_returned", 1000))
         self.result_dir      = agent_cfg.get("result_dir", "./results")
         self.parallel_agents = int(agent_cfg.get("parallel_agents", 1))
+
+        # Per-agent overrides from config
+        self._agent_overrides: Dict[str, Dict] = config.get("agent_overrides", {})
+
+        # Custom agents defined by user
+        self._custom_agents: List[Dict] = config.get("custom_agents", [])
+        self._build_custom_registry()
 
         # Shared memory for the manager itself
         self.memory = MemoryManager(
@@ -93,10 +102,23 @@ class ManagerAgent:
             mission=MANAGER_MISSION,
             max_steps=self.max_steps,
             reflection_interval=5,
+            step_callback=step_callback,
         )
 
         self._sub_agent_results: Dict[str, Any] = {}
         self._sub_agent_lock = threading.Lock()
+
+    # ------------------------------------------------------------------ #
+    #  Custom agent registry                                               #
+    # ------------------------------------------------------------------ #
+
+    def _build_custom_registry(self):
+        """Build the dynamic registry of user-created custom agents."""
+        self._custom_registry: Dict[str, Dict] = {}
+        for ca in self._custom_agents:
+            key = ca.get("name", "").strip().lower()
+            if key:
+                self._custom_registry[key] = ca
 
     # ------------------------------------------------------------------ #
     #  Main entry point                                                    #
@@ -146,27 +168,94 @@ class ManagerAgent:
         task: str,
         context: Optional[str] = None,
     ) -> Any:
-        agent_class = AGENT_REGISTRY.get(agent_type.lower())
-        if agent_class is None:
-            return f"Unknown agent type '{agent_type}'. Available: {list(AGENT_REGISTRY.keys())}"
+        agent_type_lower = agent_type.lower()
+
+        # --- Check custom agents first ---
+        custom_def = self._custom_registry.get(agent_type_lower)
+
+        # --- Check if agent is disabled via overrides ---
+        override = self._agent_overrides.get(agent_type_lower, {})
+        if not override.get("enabled", True):
+            msg = f"Agent '{agent_type}' est désactivé dans la configuration."
+            self.logger.warn(msg)
+            return msg
+
+        # --- Emit dispatch event to UI ---
+        if self._step_callback:
+            try:
+                self._step_callback({
+                    "type": "dispatch",
+                    "agent_type": agent_type,
+                    "task": task,
+                })
+            except Exception:
+                pass
 
         self.logger.manager_dispatch(agent_type, task)
 
         # Build context from manager memory + passed context
         shared_context = self._build_shared_context(context)
 
-        agent = agent_class(
-            llm=self.llm,
-            db=self.db,
-            logger=self.logger,
-            max_steps=max(10, self.max_steps // 2),
-            allow_write=self.allow_write,
-            max_rows=self.max_rows,
-        )
+        # Per-agent step settings
+        agent_max_steps = int(override.get(
+            "max_steps", max(10, self.max_steps // 2)
+        ))
+        agent_reflection = int(override.get("reflection_interval", 5))
+
+        # --- Instantiate the right agent class ---
+        if custom_def:
+            # User-created custom agent
+            template_key = custom_def.get("template", "analyst").lower()
+            template_cls = AGENT_REGISTRY.get(template_key, AnalystAgent)
+
+            # Use a CustomAgent so we can override name/specialization/mission
+            agent = CustomAgent(
+                llm=self.llm,
+                db=self.db,
+                logger=self.logger,
+                name=custom_def.get("display_name", agent_type),
+                specialization=custom_def.get("specialization", template_cls.specialization),
+                mission=custom_def.get("mission", template_cls.mission),
+                max_steps=int(custom_def.get("max_steps", agent_max_steps)),
+                allow_write=self.allow_write,
+                max_rows=self.max_rows,
+                step_callback=self._step_callback,
+            )
+        else:
+            agent_class = AGENT_REGISTRY.get(agent_type_lower)
+            if agent_class is None:
+                available = list(AGENT_REGISTRY.keys()) + list(self._custom_registry.keys())
+                return (
+                    f"Unknown agent type '{agent_type}'. "
+                    f"Available: {available}"
+                )
+            agent = agent_class(
+                llm=self.llm,
+                db=self.db,
+                logger=self.logger,
+                max_steps=agent_max_steps,
+                allow_write=self.allow_write,
+                max_rows=self.max_rows,
+                step_callback=self._step_callback,
+            )
+            # Apply per-agent reflection_interval
+            agent.engine.reflection_interval = agent_reflection
 
         sub_result = agent.run(task, context=shared_context)
 
         self.logger.manager_result(agent_type, sub_result.get("summary", "done"))
+
+        # --- Emit dispatch_done event to UI ---
+        if self._step_callback:
+            try:
+                self._step_callback({
+                    "type": "dispatch_done",
+                    "agent_type": agent_type,
+                    "summary": sub_result.get("summary", ""),
+                    "steps": sub_result.get("steps_used", 0),
+                })
+            except Exception:
+                pass
 
         # Store sub-agent findings in manager memory
         for cat, items in sub_result.get("findings", {}).items():
