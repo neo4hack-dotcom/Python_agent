@@ -124,6 +124,31 @@ AGENT_INFO: Dict[str, Dict] = {
         "category": "clickhouse",
         "mission_key": "CH_TEXT_TO_SQL_MISSION",
     },
+    # ── File agents ───────────────────────────────────────────────────────────
+    "excel": {
+        "display": "📊 Excel",
+        "description": "Créer, lire et modifier des fichiers Excel (.xlsx) — formules, formats, feuilles",
+        "default_max_steps": 25,
+        "default_reflection": 5,
+        "category": "file",
+        "mission_key": "EXCEL_AGENT_MISSION",
+    },
+    "textfile": {
+        "display": "📝 TextFile",
+        "description": "Créer, lire et modifier des fichiers texte (.txt, .csv, .log, .json…)",
+        "default_max_steps": 25,
+        "default_reflection": 5,
+        "category": "file",
+        "mission_key": "TEXT_AGENT_MISSION",
+    },
+    "filesystem": {
+        "display": "🗂️ FileSystem",
+        "description": "Navigation, recherche cross-répertoires, ouverture OS, ingestion ClickHouse",
+        "default_max_steps": 30,
+        "default_reflection": 5,
+        "category": "file",
+        "mission_key": "FILESYSTEM_AGENT_MISSION",
+    },
 }
 
 TEMPLATE_CHOICES = list(AGENT_INFO.keys())
@@ -506,6 +531,7 @@ def action_save_agents(
     allow_write: bool,
     max_rows: int,
     query_timeout: int,
+    allow_delete: bool = False,
 ) -> str:
     try:
         save_config({
@@ -519,6 +545,7 @@ def action_save_agents(
                 "allow_write_queries": bool(allow_write),
                 "max_rows_returned":   int(max_rows),
                 "query_timeout":       int(query_timeout),
+                "allow_delete":        bool(allow_delete),
             },
         })
         return "✅ Configuration agents et sécurité sauvegardée."
@@ -959,7 +986,11 @@ def build_ui() -> "gr.Blocks":
 
                 sec_allow_write = gr.Checkbox(
                     value=sec.get("allow_write_queries", False),
-                    label="Autoriser les requêtes en écriture (INSERT / UPDATE / CREATE…)",
+                    label="Autoriser les requêtes en écriture SQL (INSERT / UPDATE / CREATE…)",
+                )
+                sec_allow_delete = gr.Checkbox(
+                    value=sec.get("allow_delete", False),
+                    label="🗂️ Autoriser la suppression de fichiers (FileSystemAgent — delete_path)",
                 )
 
                 with gr.Row():
@@ -972,7 +1003,7 @@ def build_ui() -> "gr.Blocks":
                 btn_save_global.click(
                     action_save_agents,
                     inputs=[ag_max_steps, ag_reflection, ag_parallel, ag_result_dir,
-                            sec_allow_write, sec_max_rows, sec_query_timeout],
+                            sec_allow_write, sec_max_rows, sec_query_timeout, sec_allow_delete],
                     outputs=[global_ag_status],
                 )
 
