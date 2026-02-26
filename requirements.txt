@@ -11,9 +11,15 @@
 colorama>=0.4.6
 
 # ============================================================
-# AUCUNE autre dépendance :
-#   - ClickHouse : API HTTP native (urllib stdlib)
-#   - LLM        : HTTP pur (urllib stdlib)
-#   - Config     : JSON stdlib
-#   - Logging    : stdlib
+# LangGraph — orchestration multi-agents avec StateGraph
+# ============================================================
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# ============================================================
+# Dépendances stdlib (aucune installation requise) :
+#   - ClickHouse : API HTTP native (urllib)
+#   - LLM        : HTTP pur (urllib)
+#   - Config     : JSON
+#   - Logging    : logging
 # ============================================================

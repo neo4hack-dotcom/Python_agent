@@ -42,6 +42,13 @@
     "result_dir":        "./results"
   },
 
+  "langgraph": {
+    "_comment": "Configuration pour l'orchestration LangGraph (activée avec --graph en CLI)",
+    "use_langgraph":      false,
+    "stream_mode":        false,
+    "checkpointing":      false
+  },
+
   "security": {
     "_comment": "allow_write_queries=false bloque INSERT/UPDATE/DELETE/DROP/CREATE",
     "allow_write_queries": false,

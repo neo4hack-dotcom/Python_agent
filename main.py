@@ -108,6 +108,11 @@ Exemples:
         help="Agent à utiliser (défaut: manager)",
     )
     parser.add_argument(
+        "--graph",
+        action="store_true",
+        help="Utiliser LangGraph pour l'orchestration multi-agents (ignores --agent)",
+    )
+    parser.add_argument(
         "--max-steps",
         type=int,
         default=None,
@@ -191,9 +196,11 @@ def mode_list_tools():
         print()
 
 
-def mode_interactive(config: dict, default_agent: str = "manager"):
+def mode_interactive(config: dict, default_agent: str = "manager", use_graph: bool = False):
     """REPL loop for interactive mode."""
+    mode = "LangGraph" if use_graph else default_agent
     print("\n=== MODE INTERACTIF ===")
+    print(f"Mode : {mode}")
     print("Tapez votre tâche et appuyez sur Entrée. 'quit' pour quitter.\n")
     while True:
         try:
@@ -206,7 +213,7 @@ def mode_interactive(config: dict, default_agent: str = "manager"):
             break
         if not task:
             continue
-        run_task(config, task, agent=default_agent)
+        run_task(config, task, agent=default_agent, use_graph=use_graph)
 
 
 def run_task(
@@ -216,8 +223,9 @@ def run_task(
     output:    Optional[str] = None,
     max_steps: Optional[int] = None,
     allow_write: bool = False,
+    use_graph:   bool = False,
 ) -> Dict[str, Any]:
-    """Execute a task with the chosen agent."""
+    """Execute a task with the chosen agent or LangGraph pipeline."""
 
     # Apply CLI overrides
     if max_steps is not None:
@@ -225,7 +233,24 @@ def run_task(
     if allow_write:
         config.setdefault("security", {})["allow_write_queries"] = True
 
-    if agent == "manager":
+    if use_graph:
+        from core.graph      import run_graph
+        from core.llm_client import LLMClient
+        from core.db_manager import DBManager
+        from utils.logger    import AgentLogger
+
+        llm    = LLMClient(config["llm"])
+        db     = DBManager(config["databases"])
+        logger = AgentLogger(
+            name="LangGraph",
+            log_file=config.get("logging", {}).get("file"),
+            level=config.get("logging", {}).get("level", "INFO"),
+            colors=config.get("logging", {}).get("colors", True),
+        )
+        result = run_graph(task=task, llm_client=llm, db_manager=db,
+                           config=config, logger=logger)
+
+    elif agent == "manager":
         from agents.manager_agent import ManagerAgent
         runner = ManagerAgent(config)
         result = runner.run(task)
@@ -300,7 +325,7 @@ def main():
         return
 
     if args.interactive:
-        mode_interactive(config, default_agent=args.agent)
+        mode_interactive(config, default_agent=args.agent, use_graph=args.graph)
         return
 
     # --- Task mode ---
@@ -308,6 +333,7 @@ def main():
     if not task:
         print("ERREUR: Spécifiez une tâche.")
         print('  Exemple: python main.py "Analyse la qualité des données dans ClickHouse"')
+        print('  Avec LangGraph : python main.py --graph "Analyse la qualité des données"')
         print("  Ou utilisez --interactive pour le mode interactif.")
         sys.exit(1)
 
@@ -318,6 +344,7 @@ def main():
         output=args.output,
         max_steps=args.max_steps,
         allow_write=args.allow_write,
+        use_graph=args.graph,
     )
 
 
