@@ -239,13 +239,14 @@ def mode_interactive(config: dict, default_agent: str = "manager", use_graph: bo
 
 
 def run_task(
-    config:    dict,
-    task:      str,
-    agent:     str = "manager",
-    output:    Optional[str] = None,
-    max_steps: Optional[int] = None,
-    allow_write: bool = False,
-    use_graph:   bool = False,
+    config:        dict,
+    task:          str,
+    agent:         str = "manager",
+    output:        Optional[str] = None,
+    max_steps:     Optional[int] = None,
+    allow_write:   bool = False,
+    use_graph:     bool = False,
+    step_callback  = None,   # callable(dict) for UI streaming
 ) -> Dict[str, Any]:
     """Execute a task with the chosen agent or LangGraph pipeline."""
 
@@ -274,7 +275,7 @@ def run_task(
 
     elif agent == "manager":
         from agents.manager_agent import ManagerAgent
-        runner = ManagerAgent(config)
+        runner = ManagerAgent(config, step_callback=step_callback)
         result = runner.run(task)
     else:
         # Run a specific sub-agent directly
@@ -285,6 +286,7 @@ def run_task(
         from agents.quality_agent import QualityAgent
         from agents.pattern_agent import PatternAgent
         from agents.query_agent   import QueryAgent
+        from agents.base_agent    import CustomAgent
         from agents.clickhouse    import AGENT_REGISTRY as CH_REGISTRY
 
         agent_map = {
@@ -294,10 +296,6 @@ def run_task(
             "query":   QueryAgent,
             **CH_REGISTRY,
         }
-        AgentClass = agent_map.get(agent)
-        if AgentClass is None:
-            print(f"Agent inconnu: {agent}")
-            sys.exit(1)
 
         llm    = LLMClient(config["llm"])
         db     = DBManager(config["databases"])
@@ -307,17 +305,52 @@ def run_task(
             colors=config.get("logging", {}).get("colors", True),
         )
 
-        # ClickHouse specialist agents use from_config() for richer init
-        if agent in CH_REGISTRY:
-            instance = AgentClass.from_config(llm=llm, db=db, logger=logger, config=config)
+        # Check if it's a custom agent defined in config
+        custom_agents = config.get("custom_agents", [])
+        custom_def = next(
+            (ca for ca in custom_agents if ca.get("name", "").lower() == agent.lower()),
+            None
+        )
+
+        if custom_def:
+            template_key = custom_def.get("template", "analyst").lower()
+            template_cls = agent_map.get(template_key, AnalystAgent)
+            instance = CustomAgent(
+                llm=llm, db=db, logger=logger,
+                name=custom_def.get("display_name", agent),
+                specialization=custom_def.get("specialization", template_cls.specialization),
+                mission=custom_def.get("mission", template_cls.mission),
+                max_steps=int(custom_def.get(
+                    "max_steps",
+                    config.get("agents", {}).get("max_steps", 20)
+                )),
+                allow_write=allow_write,
+                max_rows=config.get("security", {}).get("max_rows_returned", 1000),
+                step_callback=step_callback,
+            )
+        elif agent in CH_REGISTRY:
+            instance = CH_REGISTRY[agent].from_config(
+                llm=llm, db=db, logger=logger, config=config,
+                step_callback=step_callback,
+            )
             if allow_write:
                 instance.tool_executor.allow_write = True
         else:
+            AgentClass = agent_map.get(agent)
+            if AgentClass is None:
+                print(f"Agent inconnu: {agent}")
+                sys.exit(1)
+            # Apply per-agent override if present
+            override = config.get("agent_overrides", {}).get(agent, {})
             instance = AgentClass(
                 llm=llm, db=db, logger=logger,
-                max_steps=config.get("agents", {}).get("max_steps", 20),
+                max_steps=int(override.get(
+                    "max_steps",
+                    config.get("agents", {}).get("max_steps", 20)
+                )),
                 allow_write=allow_write,
                 max_rows=config.get("security", {}).get("max_rows_returned", 1000),
+                step_callback=step_callback,
             )
         result = instance.run(task)
 

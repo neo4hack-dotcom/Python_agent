@@ -97,6 +97,7 @@ class AgentEngine:
     max_steps       : Maximum steps before forced stop
     reflection_interval : Steps between auto-reflections
     loop_detection_window : Steps to look back for repeated actions
+    step_callback   : Optional callable(dict) called after each step for UI streaming
     """
 
     def __init__(
@@ -111,6 +112,7 @@ class AgentEngine:
         max_steps:             int = 20,
         reflection_interval:   int = 5,
         loop_detection_window: int = 4,
+        step_callback:         Optional[Callable] = None,
     ):
         self.llm    = llm
         self.memory = memory
@@ -123,6 +125,7 @@ class AgentEngine:
         self.max_steps           = max_steps
         self.reflection_interval = reflection_interval
         self.loop_window         = loop_detection_window
+        self.step_callback       = step_callback
 
         self._recent_actions: List[str] = []   # for loop detection
 
@@ -228,6 +231,25 @@ class AgentEngine:
             )
 
             self.logger.step_result(tool_result, tool_error)
+
+            # --- Notify UI callback ---
+            if self.step_callback:
+                try:
+                    self.step_callback({
+                        "type": "step",
+                        "agent": self.agent_name,
+                        "step": step_num,
+                        "max_steps": self.max_steps,
+                        "thought": thought,
+                        "action": action,
+                        "params": params,
+                        "result": tool_result,
+                        "error": tool_error,
+                        "confidence": confidence,
+                        "duration": round(llm_duration + tool_duration, 2),
+                    })
+                except Exception:
+                    pass  # never let UI callback break the agent
 
             # --- Check termination ---
             if action == "final_answer":
