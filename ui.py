@@ -627,7 +627,6 @@ def build_ui() -> gr.Blocks:
                 chatbot = gr.Chatbot(
                     label="Conversation",
                     height=480,
-                    show_copy_button=True,
                     render_markdown=True,
                     bubble_full_width=False,
                 )
