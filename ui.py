@@ -692,7 +692,8 @@ def action_run_task_stream(
 
     history = list(history or [])
     accumulated = ""
-    history.append((message.strip(), "⏳ *Agent en cours d'exécution…*"))
+    history.append({"role": "user", "content": message.strip()})
+    history.append({"role": "assistant", "content": "⏳ *Agent en cours d'exécution…*"})
     yield history, ""
 
     # Stream step updates
@@ -708,10 +709,10 @@ def action_run_task_stream(
 
         if typ == "step" and show_steps:
             accumulated += _format_step_markdown(data) + "\n"
-            history[-1] = (
-                message.strip(),
-                accumulated + "\n\n⏳ *En cours…*",
-            )
+            history[-1] = {
+                "role": "assistant",
+                "content": accumulated + "\n\n⏳ *En cours…*",
+            }
             yield history, ""
 
     # Build final message
@@ -745,7 +746,7 @@ def action_run_task_stream(
                 + f"\n\n---\n*Agent : **{agent_name}** | Étapes : {steps} | Durée : {duration_str}*"
             )
 
-    history[-1] = (message.strip(), final)
+    history[-1] = {"role": "assistant", "content": final}
     yield history, ""
 
 
@@ -1166,6 +1167,7 @@ def build_ui() -> "gr.Blocks":
                         height=560,
                         render_markdown=True,
                         bubble_full_width=False,
+                        type="messages",
                     )
                 )
 
