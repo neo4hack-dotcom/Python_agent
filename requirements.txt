@@ -7,6 +7,11 @@
 # Décommentez si vous utilisez Oracle :
 # python-oracledb>=2.0.0
 
+# ============================================================
+# ExcelAgent — lecture et écriture de fichiers .xlsx
+# ============================================================
+openpyxl>=3.1.0
+
 # Couleurs terminal Windows (facultatif mais recommandé)
 colorama>=0.4.6
 
