@@ -9,7 +9,10 @@ Usage:
   python ui.py
   python ui.py --port 8080
   python ui.py --host 0.0.0.0 --share
+
+Compatibilité : Gradio 3.0+ (3.x et 4.x)
 """
+import inspect
 import json
 import os
 import re
@@ -34,13 +37,60 @@ except ImportError:
 
 CONFIG_FILE = _ROOT / "config.json"
 
+
+# ---------------------------------------------------------------------------
+# Compatibility helpers
+# ---------------------------------------------------------------------------
+
+def _kw(obj, **kwargs) -> dict:
+    """
+    Filtre les kwargs pour ne garder que ceux acceptés par obj.
+    Fonctionne pour les classes (inspecte __init__) et les callables.
+    Si la signature accepte **kwargs, on retourne tout sans filtrage.
+    """
+    try:
+        if isinstance(obj, type):
+            sig = inspect.signature(obj.__init__)
+        else:
+            sig = inspect.signature(obj)
+        params = sig.parameters
+        # If **kwargs present → pass everything
+        for p in params.values():
+            if p.kind == inspect.Parameter.VAR_KEYWORD:
+                return kwargs
+        supported = set(params.keys()) - {"self"}
+        return {k: v for k, v in kwargs.items() if k in supported}
+    except Exception:
+        return kwargs  # introspection failed: pass all and let Gradio decide
+
+
+def _get_theme():
+    """Retourne un thème Gradio si disponible, None sinon."""
+    try:
+        return gr.themes.Soft()
+    except AttributeError:
+        pass
+    try:
+        return gr.themes.Default()
+    except AttributeError:
+        pass
+    return None
+
+
+# gr.Group may not exist in very old Gradio versions
+try:
+    _Group = gr.Group
+except AttributeError:
+    import contextlib
+    _Group = contextlib.nullcontext
+
+
 # ---------------------------------------------------------------------------
 # Helpers config
 # ---------------------------------------------------------------------------
 
-def _strip_config_comments(raw: str) -> str:
+def _strip_config_comments(raw: str) -> dict:
     """Supprime les commentaires // et les clés _comment du JSON."""
-    # Supprime // hors des strings (après whitespace)
     raw = re.sub(r'(?m)(?<=\s)//[^\n]*', '', raw)
     config = json.loads(raw)
 
@@ -62,7 +112,6 @@ def load_config() -> Dict[str, Any]:
 
 
 def save_config(config: Dict[str, Any]) -> None:
-    # Preserve existing config to avoid overwriting sections we don't manage
     existing = {}
     if CONFIG_FILE.exists():
         try:
@@ -135,7 +184,7 @@ def action_list_models(api_type: str, base_url: str, api_key: str) -> str:
 
     if api_type.lower() == "ollama":
         url = f"{base_url}/api/tags"
-    else:  # openai-compatible (LM Studio, vLLM, LocalAI…)
+    else:
         url = f"{base_url}/v1/models"
 
     try:
@@ -287,11 +336,11 @@ def action_save_agents(
 
 def action_run_task(
     message: str,
-    history: List[Tuple[str, str]],
+    history,
     agent_name: str,
     use_graph: bool,
     allow_write: bool,
-) -> Tuple[List[Tuple[str, str]], str]:
+):
     """Exécute une instruction via l'agent sélectionné et retourne l'historique."""
     if not message.strip():
         return history, ""
@@ -310,7 +359,6 @@ def action_run_task(
             use_graph=use_graph,
         )
 
-        # Extract the best available answer text
         answer = (
             result.get("answer")
             or result.get("final_answer")
@@ -318,13 +366,12 @@ def action_run_task(
             or str(result)
         )
 
-        # Append metadata summary
         steps = result.get("steps_used", "?")
         duration = result.get("duration", 0)
         meta = f"\n\n---\n*Agent : **{agent_name}** | Étapes : {steps} | Durée : {duration:.1f}s*"
         answer = str(answer) + meta
 
-    except Exception as e:
+    except Exception:
         answer = f"❌ **Erreur lors de l'exécution :**\n\n```\n{traceback.format_exc()}\n```"
 
     history = list(history or [])
@@ -336,7 +383,7 @@ def action_run_task(
 # UI builder
 # ---------------------------------------------------------------------------
 
-def build_ui() -> gr.Blocks:
+def build_ui() -> "gr.Blocks":
     config = load_config()
     llm = config.get("llm", {})
     dbs = config.get("databases", {})
@@ -345,15 +392,21 @@ def build_ui() -> gr.Blocks:
     ag  = config.get("agents", {})
     sec = config.get("security", {})
 
-    with gr.Blocks(
+    _theme = _get_theme()
+    _css = """
+        .gradio-container { max-width: 1100px; margin: auto; }
+        .status-box { font-size: 0.95em; }
+        footer { display: none !important; }
+    """
+
+    blocks_kwargs = _kw(
+        gr.Blocks,
         title="Python Agent — Configuration & Chat",
-        theme=gr.themes.Soft(),
-        css="""
-            .gradio-container { max-width: 1100px; margin: auto; }
-            .status-box { font-size: 0.95em; }
-            footer { display: none !important; }
-        """,
-    ) as demo:
+        theme=_theme,
+        css=_css,
+    )
+
+    with gr.Blocks(**blocks_kwargs) as demo:
 
         gr.Markdown(
             "# Python Agent\n"
@@ -370,52 +423,83 @@ def build_ui() -> gr.Blocks:
 
                 with gr.Row():
                     t_api_type = gr.Dropdown(
-                        choices=["ollama", "openai"],
-                        value=llm.get("api_type", "ollama"),
-                        label="Type d'API",
-                        scale=1,
+                        **_kw(
+                            gr.Dropdown,
+                            choices=["ollama", "openai"],
+                            value=llm.get("api_type", "ollama"),
+                            label="Type d'API",
+                            scale=1,
+                        )
                     )
                     t_model = gr.Textbox(
-                        value=llm.get("model", "llama3.1:8b"),
-                        label="Modèle",
-                        placeholder="llama3.1:8b, gpt-4o-mini…",
-                        scale=2,
+                        **_kw(
+                            gr.Textbox,
+                            value=llm.get("model", "llama3.1:8b"),
+                            label="Modèle",
+                            placeholder="llama3.1:8b, gpt-4o-mini…",
+                            scale=2,
+                        )
                     )
 
                 t_base_url = gr.Textbox(
-                    value=llm.get("base_url", "http://localhost:11434"),
-                    label="URL de base (API locale HTTP)",
-                    placeholder="http://localhost:11434",
+                    **_kw(
+                        gr.Textbox,
+                        value=llm.get("base_url", "http://localhost:11434"),
+                        label="URL de base (API locale HTTP)",
+                        placeholder="http://localhost:11434",
+                    )
                 )
                 t_api_key = gr.Textbox(
-                    value="" if llm.get("api_key", "not-needed") == "not-needed" else llm.get("api_key", ""),
-                    label="Clé API",
-                    placeholder="Laisser vide pour Ollama, ou entrer sk-…",
-                    type="password",
+                    **_kw(
+                        gr.Textbox,
+                        value="" if llm.get("api_key", "not-needed") == "not-needed" else llm.get("api_key", ""),
+                        label="Clé API",
+                        placeholder="Laisser vide pour Ollama, ou entrer sk-…",
+                        type="password",
+                    )
                 )
 
                 with gr.Row():
                     t_temperature = gr.Slider(
-                        minimum=0.0, maximum=1.0,
-                        value=llm.get("temperature", 0.1),
-                        step=0.05, label="Température",
+                        **_kw(
+                            gr.Slider,
+                            minimum=0.0,
+                            maximum=1.0,
+                            value=llm.get("temperature", 0.1),
+                            step=0.05,
+                            label="Température",
+                        )
                     )
                     t_max_tokens = gr.Number(
-                        value=llm.get("max_tokens", 4096),
-                        label="Max tokens", precision=0,
+                        **_kw(
+                            gr.Number,
+                            value=llm.get("max_tokens", 4096),
+                            label="Max tokens",
+                            precision=0,
+                        )
                     )
                     t_timeout = gr.Number(
-                        value=llm.get("timeout", 120),
-                        label="Timeout (s)", precision=0,
+                        **_kw(
+                            gr.Number,
+                            value=llm.get("timeout", 120),
+                            label="Timeout (s)",
+                            precision=0,
+                        )
                     )
 
                 with gr.Row():
-                    btn_save_llm   = gr.Button("💾 Sauvegarder", variant="primary")
-                    btn_test_llm   = gr.Button("🔌 Tester la connexion")
-                    btn_list_models = gr.Button("📋 Modèles disponibles")
+                    btn_save_llm    = gr.Button(
+                        **_kw(gr.Button, value="💾 Sauvegarder", variant="primary")
+                    )
+                    btn_test_llm    = gr.Button(
+                        **_kw(gr.Button, value="🔌 Tester la connexion")
+                    )
+                    btn_list_models = gr.Button(
+                        **_kw(gr.Button, value="📋 Modèles disponibles")
+                    )
 
-                llm_status     = gr.Markdown(elem_classes=["status-box"])
-                models_output  = gr.Markdown(elem_classes=["status-box"])
+                llm_status    = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                models_output = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
 
                 btn_save_llm.click(
                     action_save_llm,
@@ -440,39 +524,28 @@ def build_ui() -> gr.Blocks:
             with gr.TabItem("🗄️ Bases de données"):
 
                 # ── ClickHouse ──────────────────────────────────────
-                with gr.Group():
+                with _Group():
                     gr.Markdown("### ClickHouse")
 
                     with gr.Row():
-                        ch_enabled = gr.Checkbox(
-                            value=ch.get("enabled", True), label="Activé"
-                        )
-                        ch_secure = gr.Checkbox(
-                            value=ch.get("secure", False), label="HTTPS/TLS"
-                        )
+                        ch_enabled = gr.Checkbox(value=ch.get("enabled", True), label="Activé")
+                        ch_secure  = gr.Checkbox(value=ch.get("secure", False), label="HTTPS/TLS")
 
                     with gr.Row():
-                        ch_host = gr.Textbox(
-                            value=ch.get("host", "localhost"), label="Hôte"
-                        )
+                        ch_host = gr.Textbox(value=ch.get("host", "localhost"), label="Hôte")
                         ch_port = gr.Number(
-                            value=ch.get("port", 8123), label="Port", precision=0
+                            **_kw(gr.Number, value=ch.get("port", 8123), label="Port", precision=0)
                         )
-                        ch_database = gr.Textbox(
-                            value=ch.get("database", "default"), label="Base de données"
-                        )
+                        ch_database = gr.Textbox(value=ch.get("database", "default"), label="Base de données")
 
                     with gr.Row():
-                        ch_user = gr.Textbox(
-                            value=ch.get("user", "default"), label="Utilisateur"
-                        )
+                        ch_user = gr.Textbox(value=ch.get("user", "default"), label="Utilisateur")
                         ch_password = gr.Textbox(
-                            value=ch.get("password", ""),
-                            label="Mot de passe", type="password"
+                            **_kw(gr.Textbox, value=ch.get("password", ""), label="Mot de passe", type="password")
                         )
 
-                    btn_test_ch = gr.Button("🔌 Tester la connexion ClickHouse")
-                    ch_status   = gr.Markdown(elem_classes=["status-box"])
+                    btn_test_ch = gr.Button(**_kw(gr.Button, value="🔌 Tester la connexion ClickHouse"))
+                    ch_status   = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
 
                     btn_test_ch.click(
                         action_test_clickhouse,
@@ -483,35 +556,26 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown("---")
 
                 # ── Oracle ──────────────────────────────────────────
-                with gr.Group():
+                with _Group():
                     gr.Markdown("### Oracle")
 
-                    ora_enabled = gr.Checkbox(
-                        value=ora.get("enabled", False), label="Activé"
-                    )
+                    ora_enabled = gr.Checkbox(value=ora.get("enabled", False), label="Activé")
 
                     with gr.Row():
-                        ora_host = gr.Textbox(
-                            value=ora.get("host", "localhost"), label="Hôte"
-                        )
+                        ora_host = gr.Textbox(value=ora.get("host", "localhost"), label="Hôte")
                         ora_port = gr.Number(
-                            value=ora.get("port", 1521), label="Port", precision=0
+                            **_kw(gr.Number, value=ora.get("port", 1521), label="Port", precision=0)
                         )
-                        ora_service = gr.Textbox(
-                            value=ora.get("service_name", "ORCL"), label="Service"
-                        )
+                        ora_service = gr.Textbox(value=ora.get("service_name", "ORCL"), label="Service")
 
                     with gr.Row():
-                        ora_user = gr.Textbox(
-                            value=ora.get("user", "system"), label="Utilisateur"
-                        )
+                        ora_user = gr.Textbox(value=ora.get("user", "system"), label="Utilisateur")
                         ora_password = gr.Textbox(
-                            value=ora.get("password", ""),
-                            label="Mot de passe", type="password"
+                            **_kw(gr.Textbox, value=ora.get("password", ""), label="Mot de passe", type="password")
                         )
 
-                    btn_test_ora = gr.Button("🔌 Tester la connexion Oracle")
-                    ora_status   = gr.Markdown(elem_classes=["status-box"])
+                    btn_test_ora = gr.Button(**_kw(gr.Button, value="🔌 Tester la connexion Oracle"))
+                    ora_status   = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
 
                     btn_test_ora.click(
                         action_test_oracle,
@@ -521,8 +585,8 @@ def build_ui() -> gr.Blocks:
 
                 gr.Markdown("---")
 
-                btn_save_db  = gr.Button("💾 Sauvegarder la configuration", variant="primary")
-                db_save_status = gr.Markdown(elem_classes=["status-box"])
+                btn_save_db    = gr.Button(**_kw(gr.Button, value="💾 Sauvegarder la configuration", variant="primary"))
+                db_save_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
 
                 btn_save_db.click(
                     action_save_databases,
@@ -541,16 +605,13 @@ def build_ui() -> gr.Blocks:
 
                 with gr.Row():
                     ag_max_steps = gr.Number(
-                        value=ag.get("max_steps", 20),
-                        label="Étapes max par agent", precision=0,
+                        **_kw(gr.Number, value=ag.get("max_steps", 20), label="Étapes max par agent", precision=0)
                     )
                     ag_reflection = gr.Number(
-                        value=ag.get("reflection_interval", 5),
-                        label="Intervalle de réflexion", precision=0,
+                        **_kw(gr.Number, value=ag.get("reflection_interval", 5), label="Intervalle de réflexion", precision=0)
                     )
                     ag_parallel = gr.Number(
-                        value=ag.get("parallel_agents", 1),
-                        label="Agents parallèles", precision=0,
+                        **_kw(gr.Number, value=ag.get("parallel_agents", 1), label="Agents parallèles", precision=0)
                     )
 
                 ag_result_dir = gr.Textbox(
@@ -560,24 +621,21 @@ def build_ui() -> gr.Blocks:
 
                 gr.Markdown("### Sécurité & limites")
 
-                with gr.Row():
-                    sec_allow_write = gr.Checkbox(
-                        value=sec.get("allow_write_queries", False),
-                        label="Autoriser les requêtes en écriture (INSERT / UPDATE / CREATE…)",
-                    )
+                sec_allow_write = gr.Checkbox(
+                    value=sec.get("allow_write_queries", False),
+                    label="Autoriser les requêtes en écriture (INSERT / UPDATE / CREATE…)",
+                )
 
                 with gr.Row():
                     sec_max_rows = gr.Number(
-                        value=sec.get("max_rows_returned", 1000),
-                        label="Lignes max retournées", precision=0,
+                        **_kw(gr.Number, value=sec.get("max_rows_returned", 1000), label="Lignes max retournées", precision=0)
                     )
                     sec_query_timeout = gr.Number(
-                        value=sec.get("query_timeout", 30),
-                        label="Timeout requête (s)", precision=0,
+                        **_kw(gr.Number, value=sec.get("query_timeout", 30), label="Timeout requête (s)", precision=0)
                     )
 
-                btn_save_agents  = gr.Button("💾 Sauvegarder", variant="primary")
-                agents_status    = gr.Markdown(elem_classes=["status-box"])
+                btn_save_agents = gr.Button(**_kw(gr.Button, value="💾 Sauvegarder", variant="primary"))
+                agents_status   = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
 
                 btn_save_agents.click(
                     action_save_agents,
@@ -596,52 +654,69 @@ def build_ui() -> gr.Blocks:
 
                 with gr.Row():
                     chat_agent = gr.Dropdown(
-                        choices=[
-                            "manager",
-                            "analyst",
-                            "quality",
-                            "pattern",
-                            "query",
-                            "sql_analyst",
-                            "clickhouse_generic",
-                            "clickhouse_table_manager",
-                            "clickhouse_writer",
-                            "clickhouse_specific",
-                            "text_to_sql_translator",
-                        ],
-                        value="manager",
-                        label="Agent",
-                        scale=2,
+                        **_kw(
+                            gr.Dropdown,
+                            choices=[
+                                "manager",
+                                "analyst",
+                                "quality",
+                                "pattern",
+                                "query",
+                                "sql_analyst",
+                                "clickhouse_generic",
+                                "clickhouse_table_manager",
+                                "clickhouse_writer",
+                                "clickhouse_specific",
+                                "text_to_sql_translator",
+                            ],
+                            value="manager",
+                            label="Agent",
+                            scale=2,
+                        )
                     )
                     chat_use_graph = gr.Checkbox(
-                        value=False,
-                        label="Utiliser LangGraph (multi-agents)",
-                        scale=1,
+                        **_kw(
+                            gr.Checkbox,
+                            value=False,
+                            label="Utiliser LangGraph (multi-agents)",
+                            scale=1,
+                        )
                     )
                     chat_allow_write = gr.Checkbox(
-                        value=False,
-                        label="Autoriser écritures SQL",
-                        scale=1,
+                        **_kw(
+                            gr.Checkbox,
+                            value=False,
+                            label="Autoriser écritures SQL",
+                            scale=1,
+                        )
                     )
 
                 chatbot = gr.Chatbot(
-                    label="Conversation",
-                    height=480,
-                    render_markdown=True,
-                    bubble_full_width=False,
+                    **_kw(
+                        gr.Chatbot,
+                        label="Conversation",
+                        height=480,
+                        render_markdown=True,
+                        bubble_full_width=False,
+                    )
                 )
 
                 with gr.Row():
                     msg_input = gr.Textbox(
-                        placeholder="Entrez votre instruction ici… (Shift+Entrée pour nouvelle ligne)",
-                        label="",
-                        show_label=False,
-                        lines=3,
-                        scale=5,
+                        **_kw(
+                            gr.Textbox,
+                            placeholder="Entrez votre instruction ici… (Shift+Entrée pour nouvelle ligne)",
+                            label="",
+                            show_label=False,
+                            lines=3,
+                            scale=5,
+                        )
                     )
-                    send_btn = gr.Button("Envoyer ▶", variant="primary", scale=1)
+                    send_btn = gr.Button(
+                        **_kw(gr.Button, value="Envoyer ▶", variant="primary", scale=1)
+                    )
 
-                clear_btn = gr.Button("🗑️ Effacer la conversation", size="sm")
+                clear_btn = gr.Button(**_kw(gr.Button, value="🗑️ Effacer la conversation", size="sm"))
 
                 # Wire events
                 send_btn.click(
@@ -672,13 +747,16 @@ def main():
 
     demo = build_ui()
     print(f"\n Python Agent UI — http://{args.host}:{args.port}\n")
-    demo.launch(
+
+    launch_kwargs = _kw(
+        demo.launch,
         server_name=args.host,
         server_port=args.port,
         share=args.share,
         inbrowser=True,
         show_error=True,
     )
+    demo.launch(**launch_kwargs)
 
 
 if __name__ == "__main__":
