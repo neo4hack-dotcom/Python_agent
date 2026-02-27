@@ -64,6 +64,60 @@
     "colors":   true
   },
 
+  "_comment_feature1": "======= FEATURE 1: Bibliothèque de prompts sauvegardés =======",
+  "prompt_library": {
+    "_comment": "Chemin vers le fichier JSON de la bibliothèque de prompts",
+    "library_file": "./prompts_library.json"
+  },
+
+  "_comment_feature2": "======= FEATURE 2: Enchaînement de prompts =======",
+  "_comment_chain": "Utiliser --chain ou --chain-file en CLI pour enchaîner des prompts",
+
+  "_comment_feature3": "======= FEATURE 3: Planification de prompts =======",
+  "scheduler": {
+    "_comment": "Configuration du planificateur de prompts",
+    "schedule_file":   "./scheduled_jobs.json",
+    "tick_interval":   30,
+    "_comment_tick":   "Intervalle de vérification en secondes (défaut: 30s)"
+  },
+
+  "_comment_feature4": "======= FEATURE 4: Surveillance de dossiers =======",
+  "event_watcher": {
+    "_comment": "Configuration de la surveillance de dossiers",
+    "triggers_file":   "./event_triggers.json",
+    "_comment_example": "Exemple de trigger intégré dans la config (complément à l'UI/CLI)",
+    "builtin_triggers": []
+  },
+
+  "_comment_feature5": "======= FEATURE 5: Répertoires de travail =======",
+  "working_directories": [
+    {
+      "_comment": "Exemple: répertoire de données en lecture seule",
+      "path":        "./data",
+      "mode":        "read",
+      "label":       "data",
+      "description": "Données sources (lecture seule)"
+    },
+    {
+      "_comment": "Exemple: répertoire de résultats en lecture+écriture",
+      "path":        "./results",
+      "mode":        "readwrite",
+      "label":       "results",
+      "description": "Dossier de sortie des résultats"
+    }
+  ],
+
+  "_comment_feature6": "======= FEATURE 6: Agent RAG sur fichier JSON =======",
+  "rag_json": {
+    "_comment": "Configuration de l'agent RAG JSON (recherche par similarité dans un fichier JSON)",
+    "json_path":  "",
+    "_comment_json_path": "Chemin absolu ou relatif vers votre fichier JSON de connaissances",
+    "list_key":   null,
+    "_comment_list_key": "Clé de liste si le JSON est un dict (ex: 'items', 'records'). null = auto-détection",
+    "max_steps":  15,
+    "_comment_example": "Exemple: json_path = '/home/user/knowledge_base.json'"
+  },
+
   "clickhouse_agents": {
     "_comment": "Configuration for the ClickHouse specialist agent suite",
 

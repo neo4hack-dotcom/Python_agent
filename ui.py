@@ -149,6 +149,15 @@ AGENT_INFO: Dict[str, Dict] = {
         "category": "file",
         "mission_key": "FILESYSTEM_AGENT_MISSION",
     },
+    # ── RAG agent ─────────────────────────────────────────────────────────────
+    "rag_json": {
+        "display": "🔎 RAG JSON",
+        "description": "Recherche par similarité TF-IDF dans une base de connaissances JSON",
+        "default_max_steps": 15,
+        "default_reflection": 5,
+        "category": "rag",
+        "mission_key": "RAG_JSON_MISSION",
+    },
 }
 
 TEMPLATE_CHOICES = list(AGENT_INFO.keys())
@@ -778,6 +787,374 @@ def action_run_task_stream(
 
 
 # ---------------------------------------------------------------------------
+# Feature 1: Prompt Library actions
+# ---------------------------------------------------------------------------
+
+def action_prompt_save(name: str, prompt: str, description: str, agent: str, tags: str) -> str:
+    try:
+        from core.prompt_library import PromptLibrary
+        lib = PromptLibrary()
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        entry = lib.save(name=name.strip(), prompt=prompt.strip(),
+                         description=description.strip(), agent=agent, tags=tag_list)
+        return f"✅ Prompt **{entry['name']}** sauvegardé (agent: {entry['agent']}, tags: {tag_list or '—'})."
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_prompt_list() -> str:
+    try:
+        from core.prompt_library import PromptLibrary
+        lib = PromptLibrary()
+        prompts = lib.list_all()
+        if not prompts:
+            return "*Aucun prompt sauvegardé.*"
+        lines = []
+        for p in prompts:
+            tags = ", ".join(p.get("tags", [])) or "—"
+            lines.append(
+                f"**[{p['name']}]** agent=`{p['agent']}` runs={p.get('run_count',0)}\n"
+                f"> {p.get('description') or p['prompt'][:80]}\n"
+                f"> Tags: {tags}"
+            )
+        return "\n\n---\n".join(lines)
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_prompt_delete(name: str) -> str:
+    try:
+        from core.prompt_library import PromptLibrary
+        lib = PromptLibrary()
+        if lib.delete(name.strip()):
+            return f"✅ Prompt **{name}** supprimé."
+        return f"❌ Prompt **{name}** introuvable."
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_prompt_run(name: str, agent_override: str, variables_str: str, history) -> Tuple[Any, str]:
+    """Run a saved prompt from the library and stream results to chat."""
+    try:
+        from core.prompt_library import PromptLibrary
+        lib = PromptLibrary()
+        entry = lib.get(name.strip())
+        if not entry:
+            return history, f"❌ Prompt '{name}' introuvable."
+        variables = {}
+        for line in (variables_str or "").splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                variables[k.strip()] = v.strip()
+        rendered = lib.render(name.strip(), variables)
+        agent = agent_override.strip() or entry["agent"]
+        lib.increment_run_count(name.strip())
+        # Return the rendered prompt to the chat input
+        return history, rendered
+    except Exception as e:
+        return history, f"❌ Erreur : {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 2: Prompt Chaining actions
+# ---------------------------------------------------------------------------
+
+def action_chain_run(chain_text: str, agent: str, pass_result: bool, history) -> Tuple[Any, str, str]:
+    """Parse chain text and run it sequentially, return combined result."""
+    try:
+        from core.prompt_queue import PromptQueue, PromptChainItem
+        from main import run_task, load_config
+
+        lines = [l.strip() for l in chain_text.strip().splitlines() if l.strip()]
+        if not lines:
+            return history, "❌ Aucun prompt dans la chaîne.", ""
+
+        config = load_config()
+        pq = PromptQueue()
+        for i, prompt in enumerate(lines):
+            pq.add(PromptChainItem(
+                prompt=prompt,
+                agent=agent,
+                pass_result=pass_result and i > 0,
+                label=f"Étape {i+1}",
+            ))
+
+        results = pq.run(run_task, config)
+
+        # Build summary
+        parts = []
+        for r in results:
+            status = "✅" if r["status"] == "ok" else "❌"
+            answer = ""
+            if isinstance(r["result"], dict):
+                answer = r["result"].get("answer") or r["result"].get("summary", "")
+            parts.append(
+                f"{status} **{r['label']}** ({r['duration']}s)\n> {str(answer)[:300]}"
+            )
+
+        summary = f"**Chaîne terminée — {len(results)} étapes**\n\n" + "\n\n".join(parts)
+        history = list(history or [])
+        history.append({"role": "user", "content": f"[Chaîne] {len(lines)} prompts"})
+        history.append({"role": "assistant", "content": summary})
+        return history, summary, ""
+    except Exception as e:
+        return history, f"❌ Erreur : {e}", ""
+
+
+# ---------------------------------------------------------------------------
+# Feature 3: Scheduler actions
+# ---------------------------------------------------------------------------
+
+def action_scheduler_list() -> str:
+    try:
+        from core.scheduler import PromptScheduler
+        sched = PromptScheduler()
+        jobs = sched.list_jobs()
+        if not jobs:
+            return "*Aucun job planifié.*"
+        lines = []
+        for j in jobs:
+            status = "🟢" if j["enabled"] else "🔴"
+            lines.append(
+                f"{status} **[{j['job_id']}] {j['name']}**\n"
+                f"> Type: `{j['schedule_type']}` | Valeur: `{j['schedule_value']}`\n"
+                f"> Exécutions: {j['run_count']} | Prochain: {j['next_run'] or 'N/A'}\n"
+                f"> Prompts: {len(j['prompts'])} prompt(s)"
+            )
+        return "\n\n---\n".join(lines)
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_scheduler_add(
+    job_name: str, schedule_type: str, schedule_value: str,
+    prompt_text: str, agent: str
+) -> str:
+    try:
+        import uuid
+        from core.scheduler import PromptScheduler, ScheduledJob
+        from core.prompt_queue import PromptChainItem
+
+        if not prompt_text.strip():
+            return "❌ Le texte du prompt est requis."
+        if not schedule_value.strip():
+            return "❌ La valeur de planification est requise."
+
+        job_id = str(uuid.uuid4())[:8]
+        prompts = []
+        for line in prompt_text.strip().splitlines():
+            line = line.strip()
+            if line:
+                prompts.append(PromptChainItem(prompt=line, agent=agent).to_dict())
+
+        job = ScheduledJob(
+            job_id=job_id,
+            name=job_name.strip() or f"job_{job_id}",
+            prompts=prompts,
+            schedule_type=schedule_type,
+            schedule_value=schedule_value.strip(),
+            agent=agent,
+        )
+        sched = PromptScheduler()
+        sched.add_job(job)
+        return (
+            f"✅ Job **{job.name}** ajouté (ID: `{job_id}`).\n"
+            f"> Type: `{schedule_type}` | Valeur: `{schedule_value}`\n"
+            f"> Prochain: {job.next_run}"
+        )
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_scheduler_remove(job_id: str) -> str:
+    try:
+        from core.scheduler import PromptScheduler
+        sched = PromptScheduler()
+        if sched.remove_job(job_id.strip()):
+            return f"✅ Job `{job_id}` supprimé."
+        return f"❌ Job `{job_id}` introuvable."
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_scheduler_toggle(job_id: str, enable: bool) -> str:
+    try:
+        from core.scheduler import PromptScheduler
+        sched = PromptScheduler()
+        sched.enable_job(job_id.strip(), enable)
+        state = "activé" if enable else "désactivé"
+        return f"✅ Job `{job_id}` {state}."
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 4: Event Watcher actions
+# ---------------------------------------------------------------------------
+
+def action_watcher_list() -> str:
+    try:
+        from core.event_watcher import EventWatcherManager
+        mgr = EventWatcherManager()
+        triggers = mgr.list_triggers()
+        if not triggers:
+            return "*Aucun trigger de surveillance configuré.*"
+        lines = []
+        for t in triggers:
+            status = "🟢" if t["enabled"] else "🔴"
+            lines.append(
+                f"{status} **[{t['trigger_id']}] {t['name']}**\n"
+                f"> Dossier: `{t['watch_path']}`\n"
+                f"> Patterns: `{', '.join(t['patterns'])}`\n"
+                f"> Événements: {', '.join(t['event_types'])} | Déclenchements: {t['run_count']}"
+            )
+        return "\n\n---\n".join(lines)
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_watcher_add(
+    name: str, watch_path: str, patterns_str: str,
+    agent: str, prompt_text: str, recursive: bool
+) -> str:
+    try:
+        import uuid
+        from core.event_watcher import EventWatcherManager, EventTrigger
+        from core.prompt_queue import PromptChainItem
+
+        if not watch_path.strip():
+            return "❌ Le chemin du dossier est requis."
+        if not prompt_text.strip():
+            return "❌ Le prompt est requis."
+
+        patterns = [p.strip() for p in patterns_str.split(",") if p.strip()] or ["*"]
+        trigger_id = str(uuid.uuid4())[:8]
+        prompts = []
+        for line in prompt_text.strip().splitlines():
+            line = line.strip()
+            if line:
+                prompts.append(PromptChainItem(prompt=line, agent=agent).to_dict())
+
+        trigger = EventTrigger(
+            trigger_id=trigger_id,
+            name=name.strip() or f"watch_{trigger_id}",
+            watch_path=watch_path.strip(),
+            patterns=patterns,
+            prompts=prompts,
+            agent=agent,
+            recursive=recursive,
+        )
+        mgr = EventWatcherManager()
+        mgr.add_trigger(trigger)
+        return (
+            f"✅ Trigger **{trigger.name}** ajouté (ID: `{trigger_id}`).\n"
+            f"> Dossier: `{watch_path}` | Patterns: `{', '.join(patterns)}`"
+        )
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_watcher_remove(trigger_id: str) -> str:
+    try:
+        from core.event_watcher import EventWatcherManager
+        mgr = EventWatcherManager()
+        if mgr.remove_trigger(trigger_id.strip()):
+            return f"✅ Trigger `{trigger_id}` supprimé."
+        return f"❌ Trigger `{trigger_id}` introuvable."
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+# ---------------------------------------------------------------------------
+# Feature 5 & 6: Working Directories and RAG JSON config actions
+# ---------------------------------------------------------------------------
+
+def action_save_working_dirs(dirs_json: str) -> str:
+    try:
+        dirs = json.loads(dirs_json)
+        if not isinstance(dirs, list):
+            return "❌ Format invalide. Attendu: une liste JSON d'objets {path, mode, label, description}."
+        # Validate entries
+        for d in dirs:
+            if "path" not in d:
+                return f"❌ Champ 'path' manquant dans: {d}"
+            if d.get("mode", "read") not in ("read", "write", "readwrite"):
+                return f"❌ Mode invalide '{d.get('mode')}'. Valeurs acceptées: read, write, readwrite."
+        save_config({"working_directories": dirs})
+        return f"✅ {len(dirs)} répertoire(s) de travail sauvegardé(s)."
+    except json.JSONDecodeError as e:
+        return f"❌ JSON invalide : {e}"
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_list_working_dirs() -> str:
+    try:
+        from core.working_dirs import WorkingDirManager
+        config = load_config()
+        wdm = WorkingDirManager(config)
+        dirs = wdm.list_directories()
+        if not dirs:
+            return "*Aucun répertoire de travail configuré.*"
+        lines = []
+        for d in dirs:
+            exists = "✅" if d["exists"] else "⚠️ MANQUANT"
+            perms = []
+            if d["can_read"]:
+                perms.append("Lecture")
+            if d["can_write"]:
+                perms.append("Écriture")
+            lines.append(
+                f"{exists} **{d['label']}** (`{d['mode']}`)\n"
+                f"> Chemin: `{d['path']}`\n"
+                f"> Permissions: {' + '.join(perms)}"
+                + (f"\n> Description: {d['description']}" if d.get("description") else "")
+            )
+        return "\n\n---\n".join(lines)
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_save_rag_config(json_path: str, list_key: str, max_steps: int) -> str:
+    try:
+        rag_cfg: Dict[str, Any] = {
+            "json_path": json_path.strip(),
+            "max_steps": int(max_steps),
+        }
+        if list_key.strip():
+            rag_cfg["list_key"] = list_key.strip()
+        else:
+            rag_cfg["list_key"] = None
+        save_config({"rag_json": rag_cfg})
+        return f"✅ Configuration RAG JSON sauvegardée.\n> Fichier: `{json_path}`"
+    except Exception as e:
+        return f"❌ Erreur : {e}"
+
+
+def action_rag_test(json_path: str, list_key: str) -> str:
+    try:
+        from core.rag_tools import load_json_as_records, TFIDFIndex
+        import os
+        path = json_path.strip()
+        if not os.path.exists(path):
+            return f"❌ Fichier introuvable : `{path}`"
+        records = load_json_as_records(path, list_key.strip() or None)
+        idx = TFIDFIndex()
+        n = idx.build(records)
+        fields: set = set()
+        for r in records[:10]:
+            if isinstance(r, dict):
+                fields.update(r.keys())
+        return (
+            f"✅ Fichier JSON chargé avec succès.\n"
+            f"> {n} enregistrement(s) indexé(s)\n"
+            f"> Champs détectés: `{', '.join(sorted(fields))}`"
+        )
+    except Exception as e:
+        return f"❌ Erreur lors du chargement : {e}"
+
+
+# ---------------------------------------------------------------------------
 # UI builder
 # ---------------------------------------------------------------------------
 
@@ -810,7 +1187,9 @@ def build_ui() -> "gr.Blocks":
 
         gr.Markdown(
             "# Python Agent\n"
-            "Configurez les connexions, paramétrez les agents et lancez vos instructions via le chat."
+            "Configurez les connexions, paramétrez les agents et lancez vos instructions via le chat.\n\n"
+            "**Nouvelles fonctionnalités** : "
+            "📚 Bibliothèque de prompts | ⛓️ Chaining | 🕐 Planification | 👁️ Surveillance de dossiers | 📁 Répertoires & RAG"
         )
 
         with gr.Tabs():
@@ -1163,7 +1542,273 @@ def build_ui() -> "gr.Blocks":
                 # The actual dropdown is wired below after creation.
 
             # ─────────────────────────────────────────────────────────
-            # TAB 4 — Chat
+            # TAB 4 — Prompt Library
+            # ─────────────────────────────────────────────────────────
+            with gr.TabItem("📚 Prompts"):
+                gr.Markdown(
+                    "### Bibliothèque de prompts\n"
+                    "Sauvegardez, gérez et exécutez vos prompts réutilisables. "
+                    "Supportez les variables `{nom}` dans les textes."
+                )
+
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        gr.Markdown("#### Ajouter / Modifier un prompt")
+                        pl_name = gr.Textbox(
+                            **_kw(gr.Textbox, label="Nom (identifiant unique)", placeholder="audit_qualite")
+                        )
+                        pl_prompt = gr.Textbox(
+                            **_kw(gr.Textbox, label="Texte du prompt (variables: {table}, {date}…)", lines=4,
+                                  placeholder="Analyse la qualité des données de la table {table}")
+                        )
+                        pl_desc = gr.Textbox(
+                            **_kw(gr.Textbox, label="Description courte (optionnel)", placeholder="Audit qualité d'une table")
+                        )
+                        with gr.Row():
+                            pl_agent = gr.Dropdown(
+                                **_kw(gr.Dropdown, choices=["manager"] + list(AGENT_INFO.keys()),
+                                      value="manager", label="Agent par défaut", scale=2)
+                            )
+                            pl_tags = gr.Textbox(
+                                **_kw(gr.Textbox, label="Tags (virgule)", placeholder="audit,qualite", scale=2)
+                            )
+                        btn_pl_save = gr.Button(**_kw(gr.Button, value="💾 Sauvegarder le prompt", variant="primary"))
+                        pl_save_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                        btn_pl_save.click(
+                            action_prompt_save,
+                            inputs=[pl_name, pl_prompt, pl_desc, pl_agent, pl_tags],
+                            outputs=[pl_save_status],
+                        )
+
+                        gr.Markdown("---\n#### Exécuter un prompt sauvegardé")
+                        pl_run_name = gr.Textbox(
+                            **_kw(gr.Textbox, label="Nom du prompt à exécuter")
+                        )
+                        pl_run_vars = gr.Textbox(
+                            **_kw(gr.Textbox, label="Variables (une par ligne: table=users)", lines=3,
+                                  placeholder="table=users\ndate=2024-01-01")
+                        )
+                        pl_run_agent = gr.Textbox(
+                            **_kw(gr.Textbox, label="Agent (laisser vide = agent par défaut du prompt)")
+                        )
+                        btn_pl_run = gr.Button(**_kw(gr.Button, value="▶ Charger dans le chat", variant="secondary"))
+                        pl_run_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+
+                        gr.Markdown("---\n#### Supprimer un prompt")
+                        pl_del_name = gr.Textbox(**_kw(gr.Textbox, label="Nom du prompt à supprimer"))
+                        btn_pl_del = gr.Button(**_kw(gr.Button, value="🗑️ Supprimer", variant="stop"))
+                        pl_del_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                        btn_pl_del.click(action_prompt_delete, inputs=[pl_del_name], outputs=[pl_del_status])
+
+                    with gr.Column(scale=2):
+                        gr.Markdown("#### Prompts sauvegardés")
+                        btn_pl_refresh = gr.Button(**_kw(gr.Button, value="🔄 Rafraîchir la liste"))
+                        pl_list_display = gr.Markdown(value=action_prompt_list(), elem_classes=["status-box"])
+                        btn_pl_refresh.click(action_prompt_list, outputs=[pl_list_display])
+
+            # ─────────────────────────────────────────────────────────
+            # TAB 5 — Prompt Chaining
+            # ─────────────────────────────────────────────────────────
+            with gr.TabItem("⛓️ Chaining"):
+                gr.Markdown(
+                    "### Enchaînement de prompts\n"
+                    "Définissez plusieurs prompts à exécuter en séquence. "
+                    "Activez *Passer le résultat* pour injecter la réponse de chaque étape "
+                    "dans la suivante via `{previous_result}`."
+                )
+
+                chain_prompts = gr.Textbox(
+                    **_kw(gr.Textbox,
+                          label="Prompts (un par ligne — exécutés dans l'ordre)",
+                          lines=8,
+                          placeholder="Analyse la table users\nDétecte les anomalies dans les résultats précédents: {previous_result}\nGénère un rapport de synthèse")
+                )
+                with gr.Row():
+                    chain_agent = gr.Dropdown(
+                        **_kw(gr.Dropdown, choices=["manager"] + list(AGENT_INFO.keys()),
+                              value="manager", label="Agent pour toute la chaîne", scale=2)
+                    )
+                    chain_pass = gr.Checkbox(
+                        **_kw(gr.Checkbox, value=False,
+                              label="Passer le résultat au prompt suivant via {previous_result}", scale=2)
+                    )
+                btn_chain_run = gr.Button(**_kw(gr.Button, value="▶ Exécuter la chaîne", variant="primary"))
+                chain_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+
+            # ─────────────────────────────────────────────────────────
+            # TAB 6 — Scheduler
+            # ─────────────────────────────────────────────────────────
+            with gr.TabItem("🕐 Planification"):
+                gr.Markdown(
+                    "### Planification de prompts\n"
+                    "Programmez l'exécution automatique de prompts selon une expression cron, "
+                    "un intervalle ou une date unique.\n\n"
+                    "**Note** : Pour que les jobs s'exécutent, lancez le daemon avec `python main.py --schedule-daemon`."
+                )
+
+                gr.Markdown("#### Jobs planifiés")
+                btn_sched_refresh = gr.Button(**_kw(gr.Button, value="🔄 Rafraîchir"))
+                sched_list_display = gr.Markdown(value=action_scheduler_list(), elem_classes=["status-box"])
+                btn_sched_refresh.click(action_scheduler_list, outputs=[sched_list_display])
+
+                gr.Markdown("---\n#### Ajouter un job")
+                with gr.Row():
+                    sched_name = gr.Textbox(**_kw(gr.Textbox, label="Nom du job", placeholder="rapport_quotidien", scale=2))
+                    sched_type = gr.Dropdown(
+                        **_kw(gr.Dropdown, choices=["cron", "interval", "once"],
+                              value="cron", label="Type", scale=1)
+                    )
+                    sched_value = gr.Textbox(
+                        **_kw(gr.Textbox, label="Valeur (cron: '0 9 * * 1-5' | interval: '3600' s | once: 'YYYY-MM-DD HH:MM:SS')",
+                              placeholder="0 9 * * 1-5", scale=3)
+                    )
+                sched_agent = gr.Dropdown(
+                    **_kw(gr.Dropdown, choices=["manager"] + list(AGENT_INFO.keys()),
+                          value="manager", label="Agent")
+                )
+                sched_prompt = gr.Textbox(
+                    **_kw(gr.Textbox, label="Prompt(s) à exécuter (un par ligne)", lines=4,
+                          placeholder="Génère le rapport qualité quotidien\nEnvoie une alerte si des anomalies sont détectées")
+                )
+                btn_sched_add = gr.Button(**_kw(gr.Button, value="➕ Ajouter le job", variant="primary"))
+                sched_add_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                btn_sched_add.click(
+                    action_scheduler_add,
+                    inputs=[sched_name, sched_type, sched_value, sched_prompt, sched_agent],
+                    outputs=[sched_add_status],
+                )
+
+                gr.Markdown("---\n#### Supprimer un job")
+                with gr.Row():
+                    sched_del_id = gr.Textbox(**_kw(gr.Textbox, label="ID du job", scale=3))
+                    btn_sched_del = gr.Button(**_kw(gr.Button, value="🗑️ Supprimer", variant="stop", scale=1))
+                sched_del_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                btn_sched_del.click(action_scheduler_remove, inputs=[sched_del_id], outputs=[sched_del_status])
+
+            # ─────────────────────────────────────────────────────────
+            # TAB 7 — Event Watcher
+            # ─────────────────────────────────────────────────────────
+            with gr.TabItem("👁️ Surveillance"):
+                gr.Markdown(
+                    "### Surveillance de dossiers\n"
+                    "Déclenchez automatiquement des prompts quand de nouveaux fichiers "
+                    "arrivent dans un dossier surveillé.\n\n"
+                    "Les variables `{filepath}`, `{filename}` et `{directory}` sont "
+                    "automatiquement injectées dans vos prompts.\n\n"
+                    "**Note** : Pour démarrer la surveillance, lancez `python main.py --watch-start`."
+                )
+
+                gr.Markdown("#### Triggers actifs")
+                btn_watch_refresh = gr.Button(**_kw(gr.Button, value="🔄 Rafraîchir"))
+                watch_list_display = gr.Markdown(value=action_watcher_list(), elem_classes=["status-box"])
+                btn_watch_refresh.click(action_watcher_list, outputs=[watch_list_display])
+
+                gr.Markdown("---\n#### Ajouter un trigger")
+                with gr.Row():
+                    watch_name = gr.Textbox(**_kw(gr.Textbox, label="Nom du trigger", placeholder="nouveau_csv", scale=2))
+                    watch_path = gr.Textbox(**_kw(gr.Textbox, label="Dossier à surveiller", placeholder="/data/inbox", scale=3))
+                with gr.Row():
+                    watch_patterns = gr.Textbox(
+                        **_kw(gr.Textbox, label="Patterns de fichiers (virgule)", placeholder="*.csv, *.json", scale=3)
+                    )
+                    watch_recursive = gr.Checkbox(**_kw(gr.Checkbox, value=False, label="Récursif", scale=1))
+                watch_agent = gr.Dropdown(
+                    **_kw(gr.Dropdown, choices=["manager"] + list(AGENT_INFO.keys()),
+                          value="manager", label="Agent")
+                )
+                watch_prompt = gr.Textbox(
+                    **_kw(gr.Textbox,
+                          label="Prompt déclenché sur nouveau fichier (variables: {filepath}, {filename})",
+                          lines=4,
+                          placeholder="Analyse le fichier {filename} qui vient d'arriver dans {directory}")
+                )
+                btn_watch_add = gr.Button(**_kw(gr.Button, value="➕ Ajouter le trigger", variant="primary"))
+                watch_add_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                btn_watch_add.click(
+                    action_watcher_add,
+                    inputs=[watch_name, watch_path, watch_patterns, watch_agent, watch_prompt, watch_recursive],
+                    outputs=[watch_add_status],
+                )
+
+                gr.Markdown("---\n#### Supprimer un trigger")
+                with gr.Row():
+                    watch_del_id = gr.Textbox(**_kw(gr.Textbox, label="ID du trigger", scale=3))
+                    btn_watch_del = gr.Button(**_kw(gr.Button, value="🗑️ Supprimer", variant="stop", scale=1))
+                watch_del_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                btn_watch_del.click(action_watcher_remove, inputs=[watch_del_id], outputs=[watch_del_status])
+
+            # ─────────────────────────────────────────────────────────
+            # TAB 8 — Working Directories & RAG JSON
+            # ─────────────────────────────────────────────────────────
+            with gr.TabItem("📁 Répertoires & RAG"):
+                gr.Markdown("### Répertoires de travail")
+                gr.Markdown(
+                    "Définissez les répertoires locaux auxquels les agents ont accès. "
+                    "Chaque entrée doit préciser le mode d'accès : `read`, `write` ou `readwrite`."
+                )
+
+                btn_wd_refresh = gr.Button(**_kw(gr.Button, value="🔄 Afficher les répertoires configurés"))
+                wd_list_display = gr.Markdown(value=action_list_working_dirs(), elem_classes=["status-box"])
+                btn_wd_refresh.click(action_list_working_dirs, outputs=[wd_list_display])
+
+                wd_raw = load_config().get("working_directories", [])
+                wd_json_str = json.dumps(
+                    [d for d in wd_raw if not isinstance(d, str) or not d.startswith("_comment")],
+                    indent=2, ensure_ascii=False
+                )
+                wd_json = gr.Textbox(
+                    **_kw(gr.Textbox,
+                          label='Répertoires (JSON — liste d\'objets {path, mode, label, description})',
+                          value=wd_json_str,
+                          lines=10,
+                          placeholder='[\n  {"path": "/data", "mode": "read", "label": "data", "description": "Données sources"},\n  {"path": "./results", "mode": "readwrite", "label": "results"}\n]')
+                )
+                btn_wd_save = gr.Button(**_kw(gr.Button, value="💾 Sauvegarder les répertoires", variant="primary"))
+                wd_save_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                btn_wd_save.click(
+                    action_save_working_dirs,
+                    inputs=[wd_json],
+                    outputs=[wd_save_status],
+                )
+
+                gr.Markdown("---\n### Configuration de l'agent RAG JSON")
+                gr.Markdown(
+                    "L'agent **RAG JSON** effectue des recherches par similarité TF-IDF "
+                    "dans un fichier JSON local. Configurez ici le chemin vers votre base de connaissances."
+                )
+
+                rag_cfg = load_config().get("rag_json", {})
+                with gr.Row():
+                    rag_path = gr.Textbox(
+                        **_kw(gr.Textbox,
+                              value=rag_cfg.get("json_path", ""),
+                              label="Chemin vers le fichier JSON",
+                              placeholder="/home/user/knowledge_base.json",
+                              scale=4)
+                    )
+                    rag_list_key = gr.Textbox(
+                        **_kw(gr.Textbox,
+                              value=rag_cfg.get("list_key") or "",
+                              label="Clé de liste (optionnel, ex: 'items')",
+                              placeholder="items",
+                              scale=2)
+                    )
+                rag_max_steps = gr.Number(
+                    **_kw(gr.Number, value=rag_cfg.get("max_steps", 15), label="Étapes max", precision=0)
+                )
+                with gr.Row():
+                    btn_rag_test = gr.Button(**_kw(gr.Button, value="🔍 Tester le chargement JSON", scale=2))
+                    btn_rag_save = gr.Button(**_kw(gr.Button, value="💾 Sauvegarder la config RAG", variant="primary", scale=2))
+                rag_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                btn_rag_test.click(action_rag_test, inputs=[rag_path, rag_list_key], outputs=[rag_status])
+                btn_rag_save.click(
+                    action_save_rag_config,
+                    inputs=[rag_path, rag_list_key, rag_max_steps],
+                    outputs=[rag_status],
+                )
+
+            # ─────────────────────────────────────────────────────────
+            # TAB 9 — Chat
             # ─────────────────────────────────────────────────────────
             with gr.TabItem("💬 Chat"):
                 gr.Markdown(
@@ -1231,6 +1876,20 @@ def build_ui() -> "gr.Blocks":
                     outputs=[chatbot, msg_input],
                 )
                 clear_btn.click(lambda: ([], ""), outputs=[chatbot, msg_input])
+
+        # ── Wire chaining tab → chatbot ───────────────────────────────
+        btn_chain_run.click(
+            action_chain_run,
+            inputs=[chain_prompts, chain_agent, chain_pass, chatbot],
+            outputs=[chatbot, chain_status, msg_input],
+        )
+
+        # ── Wire prompt library run → chat input ──────────────────────
+        btn_pl_run.click(
+            action_prompt_run,
+            inputs=[pl_run_name, pl_run_agent, pl_run_vars, chatbot],
+            outputs=[chatbot, msg_input],
+        )
 
         # ── Wire create/delete agent → update chat dropdown ───────────
         btn_create_agent.click(
