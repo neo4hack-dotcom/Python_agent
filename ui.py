@@ -397,10 +397,8 @@ def action_test_llm(api_type: str, base_url: str, api_key: str, model: str) -> s
             "timeout":     15,
         }
         client = LLMClient(cfg)
-        ok = client.ping()
-        if ok:
-            return f"✅ Connexion réussie au LLM ({api_type} — {base_url})"
-        return "❌ Le LLM n'a pas répondu. Vérifiez que le service est démarré."
+        client.complete([{"role": "user", "content": "ping"}])
+        return f"✅ Connexion réussie au LLM ({api_type} — {base_url})"
     except Exception as e:
         return f"❌ Erreur : {e}"
 
