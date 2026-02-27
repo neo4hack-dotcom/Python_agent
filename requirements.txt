@@ -12,6 +12,14 @@
 # ============================================================
 openpyxl>=3.1.0
 
+# ============================================================
+# WebAgent — navigation internet, scraping, formulaires
+# ============================================================
+# urllib + html.parser sont dans la stdlib (aucune installation requise)
+# playwright est optionnel : activer pour les formulaires JS et screenshots
+# playwright>=1.40.0
+# Après installation : playwright install chromium
+
 # Couleurs terminal Windows (facultatif mais recommandé)
 colorama>=0.4.6
 
