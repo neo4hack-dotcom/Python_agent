@@ -109,13 +109,16 @@ Exemples:
             # ClickHouse specialist agents
             "sql_analyst", "clickhouse_generic", "clickhouse_table_manager",
             "clickhouse_writer", "clickhouse_specific", "text_to_sql_translator",
+            # File agents
+            "excel", "textfile", "filesystem",
         ],
         default="manager",
         help=(
             "Agent à utiliser (défaut: manager). "
             "Agents ClickHouse: sql_analyst, clickhouse_generic, "
             "clickhouse_table_manager, clickhouse_writer, "
-            "clickhouse_specific, text_to_sql_translator"
+            "clickhouse_specific, text_to_sql_translator. "
+            "Agents fichiers: excel, textfile, filesystem"
         ),
     )
     parser.add_argument(
@@ -282,12 +285,15 @@ def run_task(
         from core.llm_client import LLMClient
         from core.db_manager import DBManager
         from utils.logger    import AgentLogger
-        from agents.analyst_agent import AnalystAgent
-        from agents.quality_agent import QualityAgent
-        from agents.pattern_agent import PatternAgent
-        from agents.query_agent   import QueryAgent
-        from agents.base_agent    import CustomAgent
-        from agents.clickhouse    import AGENT_REGISTRY as CH_REGISTRY
+        from agents.analyst_agent    import AnalystAgent
+        from agents.quality_agent    import QualityAgent
+        from agents.pattern_agent    import PatternAgent
+        from agents.query_agent      import QueryAgent
+        from agents.base_agent       import CustomAgent
+        from agents.clickhouse       import AGENT_REGISTRY as CH_REGISTRY
+        from agents.excel_agent      import ExcelAgent
+        from agents.text_agent       import TextFileAgent
+        from agents.filesystem_agent import FileSystemAgent
 
         agent_map = {
             "analyst": AnalystAgent,
@@ -295,6 +301,13 @@ def run_task(
             "pattern": PatternAgent,
             "query":   QueryAgent,
             **CH_REGISTRY,
+        }
+
+        # File agents have custom constructors (no allow_write/max_rows)
+        file_agent_map = {
+            "excel":      ExcelAgent,
+            "textfile":   TextFileAgent,
+            "filesystem": FileSystemAgent,
         }
 
         llm    = LLMClient(config["llm"])
@@ -335,6 +348,26 @@ def run_task(
             )
             if allow_write:
                 instance.tool_executor.allow_write = True
+        elif agent in file_agent_map:
+            # File agents: no DB queries, custom parameters
+            FileAgentClass = file_agent_map[agent]
+            override = config.get("agent_overrides", {}).get(agent, {})
+            default_steps = {"excel": 25, "textfile": 25, "filesystem": 30}
+            ms = int(override.get(
+                "max_steps",
+                config.get("agents", {}).get("max_steps", default_steps.get(agent, 25))
+            ))
+            init_kwargs = dict(
+                llm=llm, db=db, logger=logger,
+                max_steps=ms,
+                step_callback=step_callback,
+            )
+            if agent == "filesystem":
+                # allow_delete driven by security config (separate from allow_write)
+                init_kwargs["allow_delete"] = bool(
+                    config.get("security", {}).get("allow_delete", False)
+                )
+            instance = FileAgentClass(**init_kwargs)
         else:
             AgentClass = agent_map.get(agent)
             if AgentClass is None:
