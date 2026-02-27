@@ -5,12 +5,13 @@ Outils disponibles :
   DB         : execute_sql, list_tables, describe_table, get_sample, get_schema
   Analysis   : compute_stats, detect_nulls, detect_duplicates, detect_outliers
   Memory     : store_finding, recall_facts
-  Agent      : dispatch_agent (appel d'un sous-agent)
+  Agent      : dispatch_agent, dispatch_agents_parallel, dispatch_agents_sequential
   System     : save_result, think, final_answer
 """
 import json
 import time
 import re
+import concurrent.futures
 from typing import Any, Dict, List, Optional, Callable, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -151,16 +152,51 @@ TOOL_DEFINITIONS: List[Dict] = [
     {
         "name": "dispatch_agent",
         "description": (
-            "Dispatch a specialized sub-agent to handle a specific subtask. "
-            "Agent types: 'analyst' (data analysis), 'quality' (data quality), "
-            "'pattern' (pattern discovery), 'query' (SQL query building)."
+            "Dispatch ONE specialized sub-agent to handle a specific subtask. "
+            "Available agent types: analyst, quality, pattern, query, excel, text, "
+            "filesystem, web, sql_analyst, clickhouse_generic, clickhouse_table_manager, "
+            "clickhouse_writer, clickhouse_specific, text_to_sql_translator, rag_json."
         ),
         "params": {
-            "agent_type": "Sub-agent type: 'analyst', 'quality', 'pattern', 'query'",
+            "agent_type": "Sub-agent type (e.g. 'analyst', 'quality', 'web', 'excel'…)",
             "task":       "Detailed task description for the sub-agent",
             "context":    "Optional context to pass to the sub-agent",
         },
         "required": ["agent_type", "task"],
+    },
+    {
+        "name": "dispatch_agents_parallel",
+        "description": (
+            "Dispatch MULTIPLE sub-agents IN PARALLEL simultaneously. "
+            "All agents run concurrently — use when subtasks are INDEPENDENT of each other. "
+            "Much faster than dispatching one by one. "
+            "Example use: run 'quality' + 'pattern' + 'analyst' at the same time on the same data."
+        ),
+        "params": {
+            "agents": (
+                "List of agent dispatch specs: "
+                "[{'agent_type': 'analyst', 'task': 'describe the subtask', 'context': 'optional'}, ...]"
+            ),
+            "aggregation_hint": "Optional hint on how to combine/interpret the parallel results",
+        },
+        "required": ["agents"],
+    },
+    {
+        "name": "dispatch_agents_sequential",
+        "description": (
+            "Dispatch multiple sub-agents IN SEQUENCE, where each agent's output "
+            "is passed as context to the next agent. "
+            "Use when subtasks are DEPENDENT (output of one feeds the next). "
+            "Example: run 'analyst' first, then pass its findings to 'excel' to create a report."
+        ),
+        "params": {
+            "agents": (
+                "Ordered list of agent specs: "
+                "[{'agent_type': 'analyst', 'task': 'desc', 'context': 'optional'}, ...]"
+            ),
+            "pass_context": "Pass each agent's result as context to the next agent (default: true)",
+        },
+        "required": ["agents"],
     },
     {
         "name": "think",
@@ -440,6 +476,134 @@ class ToolExecutor:
         if self._dispatch is None:
             raise RuntimeError("dispatch_agent called but no dispatch callback registered")
         return self._dispatch(agent_type=agent_type, task=task, context=context)
+
+    def _tool_dispatch_agents_parallel(
+        self,
+        agents: List[Dict],
+        aggregation_hint: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Dispatch multiple agents in parallel using ThreadPoolExecutor.
+        Each spec: {agent_type, task, context?}
+        Returns aggregated results dict.
+        """
+        if self._dispatch is None:
+            raise RuntimeError("dispatch_agents_parallel: no dispatch callback registered")
+        if not agents:
+            return {"error": "No agents specified", "combined": "", "results": {}}
+
+        max_workers = min(len(agents), 8)
+        results: Dict[str, Any] = {}
+        errors:  Dict[str, str] = {}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_key = {}
+            for i, spec in enumerate(agents):
+                atype   = spec.get("agent_type", "analyst")
+                task    = spec.get("task", "")
+                ctx     = spec.get("context")
+                key     = f"{atype}_{i}"
+                future  = executor.submit(
+                    self._dispatch,
+                    agent_type=atype,
+                    task=task,
+                    context=ctx,
+                )
+                future_to_key[future] = key
+
+            for future in concurrent.futures.as_completed(future_to_key, timeout=600):
+                key = future_to_key[future]
+                try:
+                    results[key] = future.result()
+                except Exception as exc:
+                    errors[key] = str(exc)
+
+        parts = [f"=== {k} ===\n{v}" for k, v in results.items()]
+        parts += [f"=== {k} [ERREUR] ===\n{v}" for k, v in errors.items()]
+        combined = "\n\n".join(parts)
+        if aggregation_hint:
+            combined = f"[Hint d'agrégation: {aggregation_hint}]\n\n{combined}"
+
+        return {
+            "results":           results,
+            "errors":            errors,
+            "combined":          combined,
+            "agents_dispatched": len(agents),
+            "successful":        len(results),
+            "failed":            len(errors),
+        }
+
+    def _tool_dispatch_agents_sequential(
+        self,
+        agents: List[Dict],
+        pass_context: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Dispatch agents one after another; each agent's result is passed as
+        context to the next (when pass_context=True).
+        Each spec: {agent_type, task, context?}
+        """
+        if self._dispatch is None:
+            raise RuntimeError("dispatch_agents_sequential: no dispatch callback registered")
+        if not agents:
+            return {"error": "No agents specified", "chain_results": []}
+
+        chain_results: List[Dict] = []
+        prev_result: Optional[str] = None
+
+        for i, spec in enumerate(agents):
+            atype   = spec.get("agent_type", "analyst")
+            task    = spec.get("task", "")
+            context = spec.get("context", "")
+
+            if pass_context and prev_result is not None:
+                prev_str = str(prev_result)[:2000]
+                context  = (
+                    f"{context}\n\n=== OUTPUT DE L'ÉTAPE PRÉCÉDENTE (étape {i}) ==="
+                    f"\n{prev_str}"
+                ).strip()
+
+            try:
+                result = self._dispatch(
+                    agent_type=atype,
+                    task=task,
+                    context=context if context else None,
+                )
+                chain_results.append({
+                    "step":       i + 1,
+                    "agent_type": atype,
+                    "task":       task,
+                    "result":     result,
+                    "success":    True,
+                })
+                prev_result = result
+            except Exception as exc:
+                chain_results.append({
+                    "step":       i + 1,
+                    "agent_type": atype,
+                    "task":       task,
+                    "error":      str(exc),
+                    "success":    False,
+                })
+                prev_result = f"[Erreur de {atype}: {exc}]"
+
+        last = chain_results[-1] if chain_results else {}
+        summary_lines = []
+        for s in chain_results:
+            if s.get("success"):
+                snippet = str(s.get("result", ""))[:200]
+                summary_lines.append(f"Étape {s['step']} ({s['agent_type']}): {snippet}")
+            else:
+                summary_lines.append(
+                    f"Étape {s['step']} ({s['agent_type']}): ERREUR — {s.get('error', '')}"
+                )
+
+        return {
+            "chain_results":   chain_results,
+            "final_result":    last.get("result") if last.get("success") else None,
+            "steps_executed":  len(chain_results),
+            "chain_summary":   "\n".join(summary_lines),
+        }
 
     # ------------------------------------------------------------------ #
     #  System tools                                                        #
