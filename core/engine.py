@@ -343,13 +343,31 @@ class AgentEngine:
     # ------------------------------------------------------------------ #
 
     def _detect_loop(self, action: str, params: Dict) -> bool:
-        action_key = f"{action}:{json.dumps(params, sort_keys=True, default=str)[:100]}"
+        # For dispatch actions, use only the action name + agent types as key
+        # to catch repeated dispatch patterns even when task content varies.
+        _DISPATCH_ACTIONS = {
+            "dispatch_agent", "dispatch_agents_parallel", "dispatch_agents_sequential"
+        }
+        if action in _DISPATCH_ACTIONS:
+            agents = params.get("agents", [])
+            if isinstance(agents, list):
+                agent_types = ",".join(
+                    s.get("agent_type", "?") if isinstance(s, dict) else "?"
+                    for s in agents
+                )
+            else:
+                agent_types = str(params.get("agent_type", ""))
+            action_key = f"{action}:agents=[{agent_types}]"
+        else:
+            action_key = f"{action}:{json.dumps(params, sort_keys=True, default=str)[:100]}"
+
         self._recent_actions.append(action_key)
         if len(self._recent_actions) > self.loop_window:
             self._recent_actions.pop(0)
-        # Loop if the same action appears 3+ times in the window
+        # Loop if the same action appears 2+ times in the window (stricter for dispatch)
+        threshold = 2 if action in _DISPATCH_ACTIONS else 3
         count = self._recent_actions.count(action_key)
-        return count >= 3
+        return count >= threshold
 
     # ------------------------------------------------------------------ #
     #  Emergency fallback                                                  #

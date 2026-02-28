@@ -203,7 +203,10 @@ class MemoryManager:
             sorted_facts = sorted(self._facts.values(),
                                   key=lambda f: (-f.confidence, f.timestamp))
             for fact in sorted_facts[:30]:  # cap at 30 facts
-                parts.append(str(fact))
+                val_str = str(fact.value)
+                if len(val_str) > 1500:
+                    val_str = val_str[:1500] + "...[truncated]"
+                parts.append(f"[{fact.category.upper()}] {fact.key}: {val_str}")
 
         # Episodic summaries
         if self._episodes:
