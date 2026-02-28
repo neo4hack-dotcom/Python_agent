@@ -13,6 +13,7 @@ Installation playwright (optionnel) :
 
 import json
 import re
+import ssl
 import time
 import urllib.request
 import urllib.parse
@@ -110,18 +111,38 @@ _DEFAULT_HEADERS = {
 }
 
 
+def _make_ssl_context(verify: bool = True) -> Optional[ssl.SSLContext]:
+    """Crée un contexte SSL. Si verify=False, désactive la vérification des certificats."""
+    if verify:
+        return None  # urllib utilisera le contexte SSL par défaut (vérification activée)
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 def _fetch_url(
     url: str,
     timeout: int = 20,
     extra_headers: Optional[Dict] = None,
+    verify_ssl: bool = True,
+    retry_http_fallback: bool = True,
 ) -> tuple:
-    """Télécharge une URL. Retourne (html, final_url, status_code)."""
+    """
+    Télécharge une URL. Retourne (html, final_url, status_code).
+
+    Stratégie SSL robuste :
+      1. Tentative normale avec vérification SSL
+      2. Si erreur SSL → retry automatique sans vérification (verify_ssl=False)
+      3. Si toujours en échec et retry_http_fallback=True → fallback HTTP
+    """
     headers = dict(_DEFAULT_HEADERS)
     if extra_headers:
         headers.update(extra_headers)
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+
+    def _do_request(target_url: str, ssl_ctx) -> tuple:
+        req = urllib.request.Request(target_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
             raw = resp.read()
             content_type = resp.headers.get("Content-Type", "")
             charset = "utf-8"
@@ -132,10 +153,50 @@ def _fetch_url(
             except LookupError:
                 html = raw.decode("utf-8", errors="replace")
             return html, resp.url, resp.status
+
+    ssl_ctx = _make_ssl_context(verify=verify_ssl)
+
+    try:
+        return _do_request(url, ssl_ctx)
+
+    except (ssl.SSLError, ssl.CertificateError) as e:
+        # Retry sans vérification SSL
+        if verify_ssl:
+            permissive_ctx = _make_ssl_context(verify=False)
+            try:
+                return _do_request(url, permissive_ctx)
+            except Exception:
+                pass
+        # Fallback HTTP si HTTPS échoue
+        if retry_http_fallback and url.startswith("https://"):
+            http_url = "http://" + url[8:]
+            try:
+                return _do_request(http_url, None)
+            except Exception:
+                pass
+        return f"SSL Error: {e}", url, 0
+
+    except urllib.error.URLError as e:
+        reason_str = str(e.reason).lower()
+        # URLError peut envelopper une erreur SSL
+        if any(k in reason_str for k in ("ssl", "certificate", "cert", "handshake", "unknown protocol")):
+            if verify_ssl:
+                permissive_ctx = _make_ssl_context(verify=False)
+                try:
+                    return _do_request(url, permissive_ctx)
+                except Exception:
+                    pass
+            if retry_http_fallback and url.startswith("https://"):
+                http_url = "http://" + url[8:]
+                try:
+                    return _do_request(http_url, None)
+                except Exception:
+                    pass
+        return f"URL Error: {e.reason}", url, 0
+
     except urllib.error.HTTPError as e:
         return f"HTTP Error {e.code}: {e.reason}", url, e.code
-    except urllib.error.URLError as e:
-        return f"URL Error: {e.reason}", url, 0
+
     except Exception as e:
         return f"Error: {e}", url, 0
 
@@ -313,11 +374,15 @@ class WebToolExecutor:
         dispatch_callback: Optional[Callable] = None,
         timeout: int = 20,
         results_dir: str = "./results",
+        verify_ssl: bool = True,
+        retry_http_fallback: bool = True,
     ):
-        self.memory       = memory
-        self._dispatch    = dispatch_callback
-        self.timeout      = timeout
-        self.results_dir  = results_dir
+        self.memory               = memory
+        self._dispatch            = dispatch_callback
+        self.timeout              = timeout
+        self.results_dir          = results_dir
+        self.verify_ssl           = verify_ssl
+        self.retry_http_fallback  = retry_http_fallback
 
         # État playwright (initialisation paresseuse)
         self._playwright  = None
@@ -347,14 +412,20 @@ class WebToolExecutor:
 
         # Tentative 1 : DuckDuckGo HTML standard
         url = f"https://html.duckduckgo.com/html/?q={encoded}&kl={region}"
-        html, _, status = _fetch_url(url, timeout=self.timeout)
+        html, _, status = _fetch_url(
+            url, timeout=self.timeout,
+            verify_ssl=self.verify_ssl, retry_http_fallback=self.retry_http_fallback,
+        )
 
         results = self._parse_ddg_results(html, max_results)
 
         # Tentative 2 : DuckDuckGo Lite si l'analyse a échoué
         if not results:
             url = f"https://lite.duckduckgo.com/lite/?q={encoded}"
-            html, _, _ = _fetch_url(url, timeout=self.timeout)
+            html, _, _ = _fetch_url(
+                url, timeout=self.timeout,
+                verify_ssl=self.verify_ssl, retry_http_fallback=self.retry_http_fallback,
+            )
             results = self._parse_ddg_lite_results(html, max_results)
 
         if not results:
@@ -427,9 +498,12 @@ class WebToolExecutor:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        html, final_url, status = _fetch_url(url, timeout=self.timeout)
+        html, final_url, status = _fetch_url(
+            url, timeout=self.timeout,
+            verify_ssl=self.verify_ssl, retry_http_fallback=self.retry_http_fallback,
+        )
 
-        if status == 0 or html.startswith(("HTTP Error", "URL Error", "Error:")):
+        if status == 0 or html.startswith(("HTTP Error", "URL Error", "Error:", "SSL Error")):
             return {"url": url, "status": status, "error": html, "content": ""}
 
         text = _html_to_text(html, max_chars=max_chars)
@@ -449,7 +523,10 @@ class WebToolExecutor:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        html, final_url, _ = _fetch_url(url, timeout=self.timeout)
+        html, final_url, _ = _fetch_url(
+            url, timeout=self.timeout,
+            verify_ssl=self.verify_ssl, retry_http_fallback=self.retry_http_fallback,
+        )
 
         parser = _LinkExtractor(base_url=final_url)
         try:
@@ -487,7 +564,10 @@ class WebToolExecutor:
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
-        html, final_url, status = _fetch_url(url, timeout=self.timeout)
+        html, final_url, status = _fetch_url(
+            url, timeout=self.timeout,
+            verify_ssl=self.verify_ssl, retry_http_fallback=self.retry_http_fallback,
+        )
         result: Dict[str, Any] = {"url": final_url, "status": status}
 
         if target_type in ("tables", "all"):
@@ -666,10 +746,18 @@ class WebToolExecutor:
                 os.path.dirname(os.path.abspath(dest_path)) or ".",
                 exist_ok=True,
             )
+            ssl_ctx = _make_ssl_context(verify=self.verify_ssl)
             req = urllib.request.Request(url, headers=dict(_DEFAULT_HEADERS))
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                with open(dest_path, "wb") as f:
-                    f.write(resp.read())
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout, context=ssl_ctx) as resp:
+                    with open(dest_path, "wb") as f:
+                        f.write(resp.read())
+            except (ssl.SSLError, ssl.CertificateError, urllib.error.URLError) as e:
+                # Retry sans vérification SSL
+                permissive_ctx = _make_ssl_context(verify=False)
+                with urllib.request.urlopen(req, timeout=self.timeout, context=permissive_ctx) as resp:
+                    with open(dest_path, "wb") as f:
+                        f.write(resp.read())
             size = os.path.getsize(dest_path)
             return {"success": True, "path": dest_path, "size_bytes": size}
         except Exception as e:

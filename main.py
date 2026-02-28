@@ -883,6 +883,25 @@ def run_task(
         runner = ManagerAgent(config, step_callback=step_callback)
         result = runner.run(task)
 
+    elif agent == "web":
+        from core.llm_client    import LLMClient
+        from core.db_manager    import DBManager
+        from utils.logger       import AgentLogger
+        from agents.web_agent   import WebAgent
+
+        llm    = LLMClient(config["llm"])
+        db     = DBManager(config["databases"])
+        logger = AgentLogger(
+            name="WebAgent",
+            log_file=config.get("logging", {}).get("file"),
+            colors=config.get("logging", {}).get("colors", True),
+        )
+        instance = WebAgent.from_config(
+            llm=llm, db=db, logger=logger,
+            config=config, step_callback=step_callback,
+        )
+        result = instance.run(task)
+
     elif agent == "rag_json":
         from core.llm_client        import LLMClient
         from core.db_manager        import DBManager
