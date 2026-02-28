@@ -198,6 +198,45 @@ _CH_SPECIALIST_AGENTS = {
 }
 
 # --------------------------------------------------------------------------- #
+#  Mots-clés pour le routage heuristique rapide (minuscules)                  #
+# --------------------------------------------------------------------------- #
+
+# Indicateurs de tâches base de données — si ABSENTS, pas de ClickHouse
+_DB_KEYWORDS: frozenset = frozenset({
+    "clickhouse", "sql", "requête", "query", "database", "base de données",
+    "bdd", "table", "insert", "select", "from ", " where", "insérer",
+    "données en base", "schéma", "colonne", "champ", "enregistrement",
+    "analytics", "entrepôt", "data warehouse", "dwh",
+})
+
+# Indicateurs de tâches fichier Excel
+_EXCEL_KEYWORDS: frozenset = frozenset({
+    "excel", "xlsx", "spreadsheet", "tableur", "classeur",
+    "feuille de calcul", "feuille excel", "workbook", ".xlsx",
+})
+
+# Indicateurs de tâches fichier texte (sans Excel)
+_TEXT_FILE_KEYWORDS: frozenset = frozenset({
+    ".txt", ".csv", ".log", ".json", ".md", ".xml", ".yaml", ".yml",
+    "fichier texte", "text file", "fichier csv", "fichier log",
+    "fichier json", "markdown", "rapport texte",
+})
+
+# Indicateurs de tâches navigation internet
+_WEB_KEYWORDS: frozenset = frozenset({
+    "recherche web", "rechercher sur", "internet", "site web", "url",
+    "http://", "https://", "scraping", "scrape", "google", "bing",
+    "chercher sur le web", "naviguer", "page web", "web search",
+})
+
+# Indicateurs de tâches système de fichiers
+_FILESYSTEM_KEYWORDS: frozenset = frozenset({
+    "répertoire", "dossier", "liste les fichiers", "find files",
+    "directory", "lister les fichiers", "trouver les fichiers",
+    "arborescence", "file system", "explorer le dossier",
+})
+
+# --------------------------------------------------------------------------- #
 #  Prompts internes                                                            #
 # --------------------------------------------------------------------------- #
 
@@ -207,6 +246,14 @@ TÂCHE : {task}
 
 AGENTS DISPONIBLES :
 {agent_descriptions}
+
+⚠ RÈGLE ABSOLUE — AGENTS CLICKHOUSE RÉSERVÉS AUX TÂCHES BASE DE DONNÉES :
+Les agents clickhouse_writer, clickhouse_generic, clickhouse_table_manager, sql_analyst,
+clickhouse_specific et text_to_sql_translator NE DOIVENT ÊTRE UTILISÉS QUE si la tâche
+implique explicitement une base de données, du SQL, des tables, des requêtes ou ClickHouse.
+→ Créer/modifier un fichier local (Excel, CSV, texte) : utiliser 'excel' ou 'text', JAMAIS un agent ClickHouse.
+→ Si aucun mot-clé base de données n'est présent dans la tâche → PAS d'agent ClickHouse.
+
 STRATÉGIES :
 - "single"     : un seul agent suffit
 - "parallel"   : plusieurs sous-tâches INDÉPENDANTES → exécuter simultanément
@@ -214,11 +261,24 @@ STRATÉGIES :
 - "hybrid"     : combinaison de phases parallèles et séquentielles
 
 EXEMPLES DE STRATÉGIE :
-- "Analyse la qualité ET les patterns de la table orders" → parallel (quality + pattern)
-- "Génère un rapport Excel avec les données ClickHouse" → sequential (analyst → excel)
-- "Recherche info sur le web puis enregistre dans un fichier" → sequential (web → text)
-- "Analyse qualité, patterns ET tendances" → parallel (quality + pattern + analyst)
-- "Simple question sur les données" → single (analyst)
+- "Crée un fichier Excel 'toto' avec des nombres aléatoires colonne A"
+    → single (excel)  ← PAS de ClickHouse, c'est un fichier local
+- "Génère un fichier CSV avec 50 lignes de données aléatoires"
+    → single (text)   ← fichier texte, pas de base de données
+- "Liste les fichiers dans le dossier /data"
+    → single (filesystem)
+- "Recherche les actualités sur l'IA"
+    → single (web)
+- "Analyse la qualité ET les patterns de la table orders"
+    → parallel (quality + pattern)  ← là on a une table DB
+- "Génère un rapport Excel avec les données ClickHouse"
+    → sequential (analyst → excel)  ← analyst d'abord car DB, excel ensuite
+- "Recherche info sur le web puis enregistre dans un fichier"
+    → sequential (web → text)
+- "Analyse qualité, patterns ET tendances en base"
+    → parallel (quality + pattern + analyst)
+- "Simple question sur les données en base"
+    → single (analyst)
 
 Réponds UNIQUEMENT avec un objet JSON valide (sans markdown) :
 {{
@@ -439,6 +499,39 @@ class ManagerAgent:
         return result
 
     # ------------------------------------------------------------------ #
+    #  Routage heuristique rapide (sans LLM)                              #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _quick_heuristic_routing(task: str) -> Optional[str]:
+        """
+        Classification rapide basée sur des mots-clés, sans appel LLM.
+        Retourne le nom de l'agent si le routage est évident, sinon None.
+
+        Logique : si la tâche ne contient aucun mot-clé base de données
+        mais contient des mots-clés typiques d'un agent fichier/web,
+        on évite de soumettre le routage au LLM (qui peut se tromper).
+        """
+        t = task.lower()
+        has_db = any(kw in t for kw in _DB_KEYWORDS)
+
+        # Si la tâche implique explicitement une DB → laisser le LLM décider
+        if has_db:
+            return None
+
+        # Sinon, détecter l'agent le plus approprié par mots-clés
+        if any(kw in t for kw in _EXCEL_KEYWORDS):
+            return "excel"
+        if any(kw in t for kw in _TEXT_FILE_KEYWORDS):
+            return "text"
+        if any(kw in t for kw in _WEB_KEYWORDS):
+            return "web"
+        if any(kw in t for kw in _FILESYSTEM_KEYWORDS):
+            return "filesystem"
+
+        return None  # Pas de routage évident → laisser le LLM décider
+
+    # ------------------------------------------------------------------ #
     #  Pré-analyse intelligente du routage et plan d'orchestration         #
     # ------------------------------------------------------------------ #
 
@@ -478,10 +571,43 @@ class ManagerAgent:
 
     def _pre_analyze_task(self, task: str) -> Tuple[str, Optional[Dict]]:
         """
-        Appel LLM rapide pour identifier la stratégie d'exécution optimale.
+        Identifie la stratégie d'exécution optimale.
+        1. Tente d'abord un routage heuristique rapide (sans LLM) pour les tâches évidentes.
+        2. Sinon, appel LLM pour les tâches complexes ou ambiguës.
         Retourne (routing_hint: str, orchestration_plan: dict | None).
         """
         try:
+            # ---------------------------------------------------------------- #
+            # 0. Fast-path heuristique : évite un appel LLM pour les tâches   #
+            #    clairement identifiables (Excel, texte, web, filesystem).     #
+            # ---------------------------------------------------------------- #
+            heuristic_agent = self._quick_heuristic_routing(task)
+            if heuristic_agent:
+                self.logger.info(
+                    f"Routage heuristique (sans LLM) → agent '{heuristic_agent}'"
+                )
+                hint = (
+                    f"PRÉ-ANALYSE (heuristique) : stratégie 'single'. "
+                    f"Agent recommandé : '{heuristic_agent}'. "
+                    f"Raison : tâche identifiée par mots-clés, sans lien avec une base de données. "
+                    f"→ IMPÉRATIF : utilise dispatch_agent('{heuristic_agent}', task=...) directement."
+                )
+                decision = {
+                    "strategy": "single",
+                    "primary_agent": heuristic_agent,
+                    "execution_plan": [{
+                        "phase": 1,
+                        "mode": "sequential",
+                        "agents": [{"agent_type": heuristic_agent, "task": task, "context": ""}],
+                    }],
+                    "success_criteria": f"Tâche complétée par l'agent '{heuristic_agent}'",
+                    "reasoning": "Routage heuristique : tâche sans base de données détectée.",
+                }
+                return hint, decision
+
+            # ---------------------------------------------------------------- #
+            # 1. Appel LLM pour les tâches complexes / ambiguës               #
+            # ---------------------------------------------------------------- #
             prompt = self._build_orchestration_prompt(task)
             messages = [
                 {
@@ -513,6 +639,22 @@ class ManagerAgent:
                         break
                 else:
                     primary = ""
+
+            # ---------------------------------------------------------------- #
+            # 2. Garde-fou : agent ClickHouse sélectionné pour une tâche      #
+            #    sans aucun mot-clé base de données → correction heuristique   #
+            # ---------------------------------------------------------------- #
+            if primary in _CH_SPECIALIST_AGENTS:
+                has_db = any(kw in task.lower() for kw in _DB_KEYWORDS)
+                if not has_db:
+                    corrected = self._quick_heuristic_routing(task)
+                    self.logger.warn(
+                        f"Sanity check : le LLM a sélectionné '{primary}' (agent ClickHouse) "
+                        f"pour une tâche sans mots-clés base de données. "
+                        f"Correction → '{corrected or 'analyst'}'"
+                    )
+                    primary = corrected or "analyst"
+                    strategy = "single"
 
             # Valide et nettoie le plan d'exécution
             cleaned_plan: List[Dict] = []
