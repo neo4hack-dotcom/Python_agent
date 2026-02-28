@@ -54,14 +54,16 @@ class WebAgent:
 
     def __init__(
         self,
-        llm:           LLMClient,
-        db:            DBManager,
-        logger:        AgentLogger,
-        max_steps:     int = 20,
-        dispatch_cb             = None,
-        step_callback: Optional[Callable] = None,
-        timeout:       int = 20,
-        results_dir:   str = "./results",
+        llm:                 LLMClient,
+        db:                  DBManager,
+        logger:              AgentLogger,
+        max_steps:           int = 20,
+        dispatch_cb                       = None,
+        step_callback:       Optional[Callable] = None,
+        timeout:             int = 20,
+        results_dir:         str = "./results",
+        verify_ssl:          bool = True,
+        retry_http_fallback: bool = True,
     ):
         self.llm    = llm
         self.db     = db
@@ -78,6 +80,8 @@ class WebAgent:
             dispatch_callback=dispatch_cb,
             timeout=timeout,
             results_dir=results_dir,
+            verify_ssl=verify_ssl,
+            retry_http_fallback=retry_http_fallback,
         )
 
         self.engine = AgentEngine(
@@ -127,4 +131,6 @@ class WebAgent:
             timeout=int(web_cfg.get("timeout", 20)),
             results_dir=agent_cfg.get("result_dir", "./results"),
             step_callback=step_callback,
+            verify_ssl=bool(web_cfg.get("verify_ssl", True)),
+            retry_http_fallback=bool(web_cfg.get("retry_http_fallback", True)),
         )

@@ -233,6 +233,22 @@ AGENT_INFO: Dict[str, Dict] = {
         "category": "file",
         "mission_key": "FILESYSTEM_AGENT_MISSION",
     },
+    # ── Web agent ─────────────────────────────────────────────────────────────
+    "web": {
+        "display": "🌐 Web",
+        "description": "Recherche internet, navigation web, extraction de données",
+        "detailed_description": (
+            "Agent de navigation internet autonome : recherche DuckDuckGo (sans clé API), "
+            "lecture de pages web, extraction de tableaux et métadonnées, téléchargement de fichiers. "
+            "Gestion automatique des erreurs SSL avec retry et fallback HTTP. "
+            "À choisir quand : 'Recherche sur internet', 'Trouve les infos sur ce site', "
+            "'Télécharge ce fichier', 'Navigue sur cette URL et extrait le contenu'."
+        ),
+        "default_max_steps": 20,
+        "default_reflection": 5,
+        "category": "web",
+        "mission_key": "WEB_AGENT_MISSION",
+    },
     # ── RAG agent ─────────────────────────────────────────────────────────────
     "rag_json": {
         "display": "🔎 RAG JSON",
@@ -1245,6 +1261,108 @@ def action_rag_test(json_path: str, list_key: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Web Agent config actions
+# ---------------------------------------------------------------------------
+
+def action_save_web_config(
+    max_steps: int,
+    timeout: int,
+    verify_ssl: bool,
+    retry_http_fallback: bool,
+    max_chars: int,
+) -> str:
+    try:
+        save_config({
+            "web_agent": {
+                "max_steps":           int(max_steps),
+                "timeout":             int(timeout),
+                "verify_ssl":          bool(verify_ssl),
+                "retry_http_fallback": bool(retry_http_fallback),
+                "max_chars":           int(max_chars),
+            }
+        })
+        ssl_status = "désactivée (recommandé)" if not verify_ssl else "activée"
+        fallback_status = "activé" if retry_http_fallback else "désactivé"
+        return (
+            f"✅ Configuration Agent Web sauvegardée.\n"
+            f"> Vérification SSL : **{ssl_status}**\n"
+            f"> Fallback HTTP : **{fallback_status}**\n"
+            f"> Timeout : **{int(timeout)}s** | Étapes max : **{int(max_steps)}**"
+        )
+    except Exception as e:
+        return f"❌ Erreur lors de la sauvegarde : {e}"
+
+
+def action_test_web_url(url: str, verify_ssl: bool, retry_http_fallback: bool, timeout: int) -> str:
+    """Teste la connectivité vers une URL avec les paramètres SSL configurés."""
+    try:
+        import ssl as _ssl
+        import urllib.request as _req
+        import urllib.error as _err
+
+        url = url.strip()
+        if not url:
+            return "❌ URL vide."
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            )
+        }
+
+        def _try(target, ctx):
+            r = _req.Request(target, headers=headers)
+            with _req.urlopen(r, timeout=int(timeout), context=ctx) as resp:
+                return resp.status, resp.url, len(resp.read())
+
+        ssl_ctx = None
+        if not verify_ssl:
+            ssl_ctx = _ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = _ssl.CERT_NONE
+
+        try:
+            code, final_url, size = _try(url, ssl_ctx)
+            return (
+                f"✅ Connexion réussie !\n"
+                f"> URL finale : `{final_url}`\n"
+                f"> Code HTTP : **{code}** | Taille : **{size} octets**"
+            )
+        except (_ssl.SSLError, _ssl.CertificateError, _err.URLError) as ssl_err:
+            if verify_ssl and retry_http_fallback and url.startswith("https://"):
+                permissive = _ssl.create_default_context()
+                permissive.check_hostname = False
+                permissive.verify_mode = _ssl.CERT_NONE
+                try:
+                    code, final_url, size = _try(url, permissive)
+                    return (
+                        f"⚠️ Connexion réussie sans vérification SSL (certificat invalide)\n"
+                        f"> URL finale : `{final_url}` | Code : **{code}**\n"
+                        f"> Recommandation : désactivez la vérification SSL dans la config."
+                    )
+                except Exception:
+                    pass
+                if url.startswith("https://"):
+                    http_url = "http://" + url[8:]
+                    try:
+                        code, final_url, size = _try(http_url, None)
+                        return (
+                            f"⚠️ Connexion réussie via HTTP (fallback)\n"
+                            f"> URL finale : `{final_url}` | Code : **{code}**"
+                        )
+                    except Exception:
+                        pass
+            return f"❌ Erreur SSL : {ssl_err}"
+        except Exception as e:
+            return f"❌ Erreur : {e}"
+    except Exception as e:
+        return f"❌ Erreur inattendue : {e}"
+
+
+# ---------------------------------------------------------------------------
 # UI builder
 # ---------------------------------------------------------------------------
 
@@ -1279,7 +1397,7 @@ def build_ui() -> "gr.Blocks":
             "# Python Agent\n"
             "Configurez les connexions, paramétrez les agents et lancez vos instructions via le chat.\n\n"
             "**Nouvelles fonctionnalités** : "
-            "📚 Bibliothèque de prompts | ⛓️ Chaining | 🕐 Planification | 👁️ Surveillance de dossiers | 📁 Répertoires & RAG"
+            "📚 Bibliothèque de prompts | ⛓️ Chaining | 🕐 Planification | 👁️ Surveillance de dossiers | 📁 Répertoires & RAG | 🌐 Agent Web"
         )
 
         with gr.Tabs():
@@ -1906,7 +2024,113 @@ def build_ui() -> "gr.Blocks":
                 )
 
             # ─────────────────────────────────────────────────────────
-            # TAB 9 — Chat
+            # TAB 9 — Agent Web
+            # ─────────────────────────────────────────────────────────
+            with gr.TabItem("🌐 Agent Web"):
+                gr.Markdown("### Configuration de l'Agent Web")
+                gr.Markdown(
+                    "L'**Agent Web** (🌐 Web) navigue sur internet, effectue des recherches DuckDuckGo "
+                    "et extrait du contenu de pages web. Configurez ici le comportement SSL, les timeouts "
+                    "et les paramètres d'extraction."
+                )
+
+                web_cfg_ui = load_config().get("web_agent", {})
+
+                gr.Markdown("#### ⚡ Paramètres d'exécution")
+                with gr.Row():
+                    web_max_steps = gr.Number(
+                        **_kw(gr.Number,
+                              value=web_cfg_ui.get("max_steps", 20),
+                              label="Étapes max",
+                              precision=0,
+                              minimum=1,
+                              maximum=100,
+                              scale=1)
+                    )
+                    web_timeout = gr.Number(
+                        **_kw(gr.Number,
+                              value=web_cfg_ui.get("timeout", 20),
+                              label="Timeout HTTP (secondes)",
+                              precision=0,
+                              minimum=5,
+                              maximum=120,
+                              scale=1)
+                    )
+                    web_max_chars = gr.Number(
+                        **_kw(gr.Number,
+                              value=web_cfg_ui.get("max_chars", 8000),
+                              label="Caractères max par page",
+                              precision=0,
+                              minimum=1000,
+                              maximum=50000,
+                              scale=1)
+                    )
+
+                gr.Markdown("#### 🔒 Gestion SSL")
+                gr.Markdown(
+                    "> **Problèmes SSL fréquents ?** Désactivez la vérification SSL et activez le fallback HTTP. "
+                    "L'agent retentera automatiquement sans vérification si un certificat est invalide."
+                )
+
+                with gr.Row():
+                    web_verify_ssl = gr.Checkbox(
+                        value=web_cfg_ui.get("verify_ssl", True),
+                        label="Vérifier les certificats SSL",
+                        info="Décochez pour ignorer les erreurs de certificat (autosigné, expiré, etc.)",
+                        scale=1,
+                    )
+                    web_retry_fallback = gr.Checkbox(
+                        value=web_cfg_ui.get("retry_http_fallback", True),
+                        label="Fallback HTTP si HTTPS échoue",
+                        info="Retente en HTTP non chiffré si HTTPS rencontre une erreur SSL",
+                        scale=1,
+                    )
+
+                with gr.Row():
+                    btn_web_save = gr.Button(
+                        **_kw(gr.Button, value="💾 Sauvegarder la config Web", variant="primary", scale=2)
+                    )
+                web_save_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                btn_web_save.click(
+                    action_save_web_config,
+                    inputs=[web_max_steps, web_timeout, web_verify_ssl, web_retry_fallback, web_max_chars],
+                    outputs=[web_save_status],
+                )
+
+                gr.Markdown("---\n#### 🧪 Test de connectivité")
+                gr.Markdown("Testez l'accès à une URL avec les paramètres SSL configurés ci-dessus.")
+                with gr.Row():
+                    web_test_url = gr.Textbox(
+                        **_kw(gr.Textbox,
+                              placeholder="https://example.com",
+                              label="URL à tester",
+                              scale=4)
+                    )
+                    btn_web_test = gr.Button(
+                        **_kw(gr.Button, value="🔍 Tester", scale=1)
+                    )
+                web_test_status = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
+                btn_web_test.click(
+                    action_test_web_url,
+                    inputs=[web_test_url, web_verify_ssl, web_retry_fallback, web_timeout],
+                    outputs=[web_test_status],
+                )
+
+                gr.Markdown("---\n#### 📋 Outils disponibles")
+                gr.Markdown(
+                    "| Outil | Description |\n"
+                    "|---|---|\n"
+                    "| `web_search` | Recherche DuckDuckGo (sans clé API) |\n"
+                    "| `web_navigate` | Lit le contenu textuel d'une page |\n"
+                    "| `web_get_links` | Extrait tous les liens d'une page |\n"
+                    "| `web_extract_structured` | Tableaux, listes, métadonnées |\n"
+                    "| `web_download` | Télécharge un fichier depuis une URL |\n"
+                    "| `web_fill_form` | Remplit un formulaire (nécessite playwright) |\n"
+                    "| `web_screenshot` | Capture d'écran (nécessite playwright) |\n"
+                )
+
+            # ─────────────────────────────────────────────────────────
+            # TAB 10 — Chat
             # ─────────────────────────────────────────────────────────
             with gr.TabItem("💬 Chat"):
                 gr.Markdown(

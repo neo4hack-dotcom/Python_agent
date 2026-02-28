@@ -119,6 +119,21 @@
     }
   ],
 
+  "_comment_web_agent": "======= Agent Web — navigation internet =======",
+  "web_agent": {
+    "_comment": "Configuration de l'agent de navigation web (WebAgent)",
+    "max_steps": 20,
+    "_comment_max_steps": "Nombre maximum d'étapes de raisonnement (défaut: 20)",
+    "timeout": 20,
+    "_comment_timeout": "Timeout HTTP en secondes par requête (défaut: 20)",
+    "verify_ssl": false,
+    "_comment_verify_ssl": "false = ignore les erreurs de certificat SSL (recommandé pour éviter les erreurs SSL)",
+    "retry_http_fallback": true,
+    "_comment_fallback": "true = retente en HTTP si HTTPS échoue (contourne certains problèmes SSL)",
+    "max_chars": 8000,
+    "_comment_max_chars": "Nombre maximum de caractères extraits par page (défaut: 8000)"
+  },
+
   "_comment_feature6": "======= FEATURE 6: Agent RAG sur fichier JSON =======",
   "rag_json": {
     "_comment": "Configuration de l'agent RAG JSON (recherche par similarité dans un fichier JSON)",
