@@ -772,7 +772,7 @@ class FileSystemToolExecutor:
                                category=category, confidence=1.0)
         return f"Finding '{key}' stored in semantic memory."
 
-    def _tool_think(self, reasoning: str) -> str:
+    def _tool_think(self, reasoning: str = "") -> str:
         return f"[REASONING] {reasoning}"
 
     def _tool_final_answer(self, answer: str, summary: str = "") -> Dict[str, str]:

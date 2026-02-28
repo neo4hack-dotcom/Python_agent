@@ -474,7 +474,19 @@ class ToolExecutor:
         context: Optional[str] = None,
     ) -> Any:
         if self._dispatch is None:
-            raise RuntimeError("dispatch_agent called but no dispatch callback registered")
+            # Soft failure: return a recoverable error dict instead of raising.
+            # The agent can read this and pivot to final_answer or a different tool.
+            return {
+                "error": (
+                    f"dispatch_agent('{agent_type}') non disponible dans ce contexte : "
+                    "aucun callback de dispatch enregistré."
+                ),
+                "agent_type": agent_type,
+                "hint": (
+                    "Complète la tâche directement avec les outils disponibles, "
+                    "ou appelle final_answer si la tâche dépasse tes capacités."
+                ),
+            }
         return self._dispatch(agent_type=agent_type, task=task, context=context)
 
     def _tool_dispatch_agents_parallel(
@@ -488,7 +500,12 @@ class ToolExecutor:
         Returns aggregated results dict.
         """
         if self._dispatch is None:
-            raise RuntimeError("dispatch_agents_parallel: no dispatch callback registered")
+            return {
+                "error": "dispatch_agents_parallel non disponible : aucun callback enregistré.",
+                "hint": "Appelle final_answer ou utilise les outils disponibles directement.",
+                "results": {}, "errors": {}, "combined": "",
+                "agents_dispatched": 0, "successful": 0, "failed": len(agents),
+            }
         if not agents:
             return {"error": "No agents specified", "combined": "", "results": {}}
 
@@ -544,7 +561,11 @@ class ToolExecutor:
         Each spec: {agent_type, task, context?}
         """
         if self._dispatch is None:
-            raise RuntimeError("dispatch_agents_sequential: no dispatch callback registered")
+            return {
+                "error": "dispatch_agents_sequential non disponible : aucun callback enregistré.",
+                "hint": "Appelle final_answer ou utilise les outils disponibles directement.",
+                "chain_results": [], "final_result": None, "steps_executed": 0, "chain_summary": "",
+            }
         if not agents:
             return {"error": "No agents specified", "chain_results": []}
 
@@ -609,7 +630,7 @@ class ToolExecutor:
     #  System tools                                                        #
     # ------------------------------------------------------------------ #
 
-    def _tool_think(self, reasoning: str) -> str:
+    def _tool_think(self, reasoning: str = "") -> str:
         return f"[REASONING] {reasoning}"
 
     def _tool_final_answer(self, answer: str, summary: str = "") -> Dict[str, str]:

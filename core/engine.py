@@ -128,6 +128,7 @@ class AgentEngine:
         self.step_callback       = step_callback
 
         self._recent_actions: List[str] = []   # for loop detection
+        self._loop_counts: Dict[str, int] = {}  # per-action consecutive loop counts
 
     # ------------------------------------------------------------------ #
     #  Main run loop                                                       #
@@ -191,21 +192,51 @@ class AgentEngine:
 
             # --- Loop detection ---
             if self._detect_loop(action, params):
+                original_action = action
+                loop_count = self._loop_counts.get(original_action, 0) + 1
+                self._loop_counts[original_action] = loop_count
+
                 self.logger.warn(
-                    f"Loop detected at step {step_num} (action '{action}' repeated). "
-                    "Injecting loop-break hint."
+                    f"Loop detected at step {step_num} (action '{original_action}' repeated "
+                    f"{loop_count}x). "
+                    + ("Forcing final_answer." if loop_count >= 2 else "Injecting loop-break hint.")
                 )
                 self.memory.store_fact(
                     f"loop_warning_{step_num}",
-                    f"Action '{action}' was repeated — try a different approach",
+                    f"Action '{original_action}' repeated {loop_count}x — switching approach",
                     source="engine", category="finding",
                 )
-                # Force a reflection step
-                action = "think"
-                params = {"reasoning": (
-                    f"I notice I've been repeating action '{action}'. "
-                    "I should try a completely different approach."
-                )}
+
+                if loop_count >= 2:
+                    # Hard stop: the agent is truly stuck — emit a graceful final_answer
+                    action = "final_answer"
+                    findings = self.memory.export_findings()
+                    stored   = [
+                        f"{it['key']}: {str(it['value'])[:120]}"
+                        for cat in findings.values()
+                        for it in cat
+                    ]
+                    stored_str = "\n".join(stored) if stored else "(aucun résultat partiel)"
+                    params = {
+                        "answer": (
+                            f"La tâche n'a pas pu être complétée : l'action '{original_action}' "
+                            f"a échoué {loop_count} fois consécutives.\n\n"
+                            f"Résultats partiels accumulés :\n{stored_str}"
+                        ),
+                        "summary": (
+                            f"Échec : '{original_action}' en boucle ({loop_count}x). "
+                            "Vérifiez la configuration et les agents disponibles."
+                        ),
+                    }
+                else:
+                    # First loop: inject a strong reflection hint
+                    action = "think"
+                    params = {"reasoning": (
+                        f"ALERTE : l'action '{original_action}' a déjà échoué ou été répétée. "
+                        "Je dois impérativement changer d'approche : utiliser un outil différent, "
+                        "ou appeler final_answer si la tâche ne peut pas être accomplie avec les "
+                        "outils disponibles."
+                    )}
 
             # --- Execute tool ---
             t0 = time.time()

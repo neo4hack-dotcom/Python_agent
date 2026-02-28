@@ -42,11 +42,12 @@ class GraphState(TypedDict):
     error:          Optional[str]        # Error message if something went wrong
 
 
-# All routable agent names (original + ClickHouse specialists)
+# All routable agent names (original + ClickHouse specialists + file/web agents)
 _ALL_AGENT_NAMES = {
     "analyst", "quality", "pattern", "query",
     "sql_analyst", "clickhouse_generic", "clickhouse_table_manager",
     "clickhouse_writer", "clickhouse_specific", "text_to_sql_translator",
+    "excel", "text", "filesystem", "web",
 }
 
 
@@ -94,31 +95,47 @@ def create_agent_graph(
         logger.info(f"Task: {task[:120]}")
 
         prompt = (
-            "You are an AI orchestrator for data analysis.\n"
-            "Given the task below, decide which specialized agents to run.\n\n"
+            "You are an AI orchestrator. Given the task below, decide which specialized agent(s) to run.\n\n"
             "Available agents:\n"
-            "  --- General purpose ---\n"
+            "  --- File / Web agents (use these for LOCAL files and internet tasks) ---\n"
+            "  - excel                    : CREATE or EDIT Excel files (.xlsx) — no database needed\n"
+            "  - text                     : create/read/edit text files (.csv .txt .json .md)\n"
+            "  - filesystem               : browse directories, find or read files\n"
+            "  - web                      : search the internet, scrape web pages\n"
+            "  --- Database / analysis agents (use ONLY when the task involves SQL/ClickHouse/data) ---\n"
             "  - analyst                  : data statistics, trends, KPIs, distributions\n"
             "  - quality                  : data quality (nulls, duplicates, outliers)\n"
             "  - pattern                  : pattern discovery, correlations, anomaly detection\n"
             "  - query                    : SQL query building and optimization\n"
-            "  --- ClickHouse specialists ---\n"
+            "  --- ClickHouse specialists (use ONLY for explicit ClickHouse/DB tasks) ---\n"
             "  - sql_analyst              : expert CH SQL generation with preflight EXPLAIN\n"
             "  - clickhouse_generic       : DAG-driven deep ClickHouse analysis\n"
             "  - clickhouse_table_manager : DDL admin (CREATE/ALTER tables)\n"
             "  - clickhouse_writer        : sandboxed DML (INSERT into agent_ tables)\n"
             "  - clickhouse_specific      : parameterized template reports (P1-P4)\n"
             "  - text_to_sql_translator   : natural-language to ClickHouse SQL\n\n"
+            "CRITICAL ROUTING RULES:\n"
+            "  1. Creating/editing an Excel or CSV file → use 'excel' or 'text'. NEVER a ClickHouse agent.\n"
+            "  2. Browsing files or folders → use 'filesystem'.\n"
+            "  3. Searching the internet → use 'web'.\n"
+            "  4. Only use database agents when the task explicitly mentions tables, SQL, ClickHouse, "
+            "or queries.\n\n"
+            "EXAMPLES:\n"
+            "  'Crée un fichier excel avec des données aléatoires' → [\"excel\"]\n"
+            "  'Génère un CSV avec 50 lignes'                      → [\"text\"]\n"
+            "  'Liste les fichiers dans /data'                     → [\"filesystem\"]\n"
+            "  'Recherche des infos sur l'IA'                      → [\"web\"]\n"
+            "  'Analyse la qualité de la table orders'             → [\"quality\"]\n"
+            "  'Génère un rapport Excel depuis ClickHouse'         → [\"analyst\", \"excel\"]\n\n"
             f"Task: {task}\n\n"
             "Reply ONLY with a valid JSON object:\n"
             "{\n"
-            '  "plan": ["agent1", "agent2"],\n'
+            '  "plan": ["agent1"],\n'
             '  "reasoning": "brief explanation"\n'
             "}\n\n"
             "Rules:\n"
-            "- Include only agents relevant to the task\n"
-            "- Order them logically (e.g. sql_analyst before clickhouse_generic)\n"
-            "- Prefer ClickHouse specialists for ClickHouse-specific tasks\n"
+            "- Include ONLY agents needed for the task\n"
+            "- For file creation tasks: use excel or text, NOT database agents\n"
             "- Minimum 1 agent, maximum 4 agents\n"
         )
 
@@ -245,6 +262,48 @@ def create_agent_graph(
         from agents.query_agent import QueryAgent
         return _run_agent(QueryAgent, "query", state)
 
+    # ---- File / Web agent nodes (simple constructors — no allow_write/max_rows) ---
+
+    def _run_simple_agent(agent_cls, agent_name: str, state: GraphState) -> GraphState:
+        """
+        Instantiate a file/web agent (simpler constructor: no allow_write / max_rows)
+        and run it, then merge results into state.
+        """
+        task    = state["task"]
+        context = state.get("shared_context", "")
+        logger.manager_dispatch(agent_name, task)
+        t0 = time.time()
+        try:
+            agent  = agent_cls(
+                llm=llm_client, db=db_manager, logger=logger,
+                max_steps=max(8, max_steps // 2),
+            )
+            result = agent.run(task, context=context)
+        except Exception as exc:
+            logger.error(f"Agent '{agent_name}' raised: {exc}")
+            result = {
+                "answer": f"Agent {agent_name} encountered an error: {exc}",
+                "summary": f"{agent_name} failed: {exc}",
+                "findings": {}, "steps_used": 0,
+            }
+        return _merge_agent_result(agent_name, result, state, round(time.time() - t0, 1))
+
+    def excel_node(state: GraphState) -> GraphState:
+        from agents.excel_agent import ExcelAgent
+        return _run_simple_agent(ExcelAgent, "excel", state)
+
+    def text_node(state: GraphState) -> GraphState:
+        from agents.text_agent import TextFileAgent
+        return _run_simple_agent(TextFileAgent, "text", state)
+
+    def filesystem_node(state: GraphState) -> GraphState:
+        from agents.filesystem_agent import FileSystemAgent
+        return _run_simple_agent(FileSystemAgent, "filesystem", state)
+
+    def web_node(state: GraphState) -> GraphState:
+        from agents.web_agent import WebAgent
+        return _run_simple_agent(WebAgent, "web", state)
+
     # ---- ClickHouse specialist nodes ----------------------------------------
 
     def sql_analyst_node(state: GraphState) -> GraphState:
@@ -342,6 +401,11 @@ def create_agent_graph(
     graph.add_node("quality",   quality_node)
     graph.add_node("pattern",   pattern_node)
     graph.add_node("query",     query_node)
+    # File / Web agent nodes
+    graph.add_node("excel",      excel_node)
+    graph.add_node("text",       text_node)
+    graph.add_node("filesystem", filesystem_node)
+    graph.add_node("web",        web_node)
     # ClickHouse specialist nodes
     graph.add_node("sql_analyst",              sql_analyst_node)
     graph.add_node("clickhouse_generic",       clickhouse_generic_node)
@@ -360,6 +424,11 @@ def create_agent_graph(
         "quality":   "quality",
         "pattern":   "pattern",
         "query":     "query",
+        # File / Web
+        "excel":      "excel",
+        "text":       "text",
+        "filesystem": "filesystem",
+        "web":        "web",
         # ClickHouse specialists
         "sql_analyst":              "sql_analyst",
         "clickhouse_generic":       "clickhouse_generic",
@@ -377,6 +446,7 @@ def create_agent_graph(
     # From every agent node: route to next agent or aggregate
     for _node in [
         "analyst", "quality", "pattern", "query",
+        "excel", "text", "filesystem", "web",
         "sql_analyst", "clickhouse_generic", "clickhouse_table_manager",
         "clickhouse_writer", "clickhouse_specific", "text_to_sql_translator",
     ]:
