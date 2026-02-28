@@ -516,6 +516,12 @@ class ToolExecutor:
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_key = {}
             for i, spec in enumerate(agents):
+                if not isinstance(spec, dict):
+                    errors[f"agent_{i}"] = (
+                        f"Invalid spec at index {i}: expected dict, got "
+                        f"{type(spec).__name__}. Spec: {str(spec)[:100]}"
+                    )
+                    continue
                 atype   = spec.get("agent_type", "analyst")
                 task    = spec.get("task", "")
                 ctx     = spec.get("context")
@@ -573,13 +579,39 @@ class ToolExecutor:
         prev_result: Optional[str] = None
 
         for i, spec in enumerate(agents):
+            if not isinstance(spec, dict):
+                chain_results.append({
+                    "step":       i + 1,
+                    "agent_type": f"unknown_{i}",
+                    "task":       "",
+                    "error":      (
+                        f"Invalid spec at index {i}: expected dict, got "
+                        f"{type(spec).__name__}. Spec: {str(spec)[:100]}"
+                    ),
+                    "success":    False,
+                })
+                prev_result = f"[Spec invalide à l'étape {i+1}]"
+                continue
+
             atype   = spec.get("agent_type", "analyst")
             task    = spec.get("task", "")
             context = spec.get("context", "")
 
             if pass_context and prev_result is not None:
-                prev_str = str(prev_result)[:2000]
-                context  = (
+                # Serialize the previous result with a generous limit
+                if isinstance(prev_result, (dict, list)):
+                    prev_str = json.dumps(prev_result, ensure_ascii=False, default=str)
+                else:
+                    prev_str = str(prev_result)
+                prev_str = prev_str[:8000]
+
+                # Embed data DIRECTLY in the task so the agent can't miss it
+                task = (
+                    f"{task}\n\n"
+                    f"[OUTPUT DE L'ÉTAPE PRÉCÉDENTE (étape {i}) — utilise ces données directement]:\n"
+                    f"{prev_str}"
+                )
+                context = (
                     f"{context}\n\n=== OUTPUT DE L'ÉTAPE PRÉCÉDENTE (étape {i}) ==="
                     f"\n{prev_str}"
                 ).strip()
