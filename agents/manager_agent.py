@@ -302,9 +302,18 @@ _EVALUATION_PROMPT = """Tu es un évaluateur expert de qualité de réponses d'a
 
 TÂCHE ORIGINALE : {task}
 
+CRITÈRES DE SUCCÈS ATTENDUS : {success_criteria}
+
 AGENT : {agent_type}
 RÉPONSE DE L'AGENT :
 {answer}
+
+CONTEXTE D'EXÉCUTION IMPORTANT :
+- Les agents s'exécutent en LOCAL sur le système de fichiers de la machine.
+- Il n'existe PAS de liens de téléchargement, d'URLs ou d'accès distant.
+- Pour les agents 'excel', 'text', 'filesystem' : la réussite = fichier créé/modifié sur le disque local avec le contenu correct.
+- Ne jamais pénaliser l'absence de lien de téléchargement, d'URL ou de preuve visuelle externe.
+- Si l'agent confirme qu'un fichier a été créé/écrit/enregistré à un chemin local, c'est une réussite complète.
 
 Évalue si cette réponse répond COMPLÈTEMENT et CORRECTEMENT à la tâche.
 Réponds UNIQUEMENT en JSON valide :
@@ -322,7 +331,8 @@ Critères de scoring :
 - 0.5–0.7 : Réponse partielle, plusieurs éléments importants manquants
 - 0.0–0.5 : Réponse insuffisante, hors sujet ou vide
 
-Mets retry=true SEULEMENT si score < 0.6 ET qu'il y a des éléments clairement manquants et récupérables."""
+Mets retry=true SEULEMENT si score < 0.6 ET qu'il y a des éléments clairement manquants et récupérables.
+Ne mets PAS retry=true si la tâche de création/écriture de fichier local est confirmée comme accomplie."""
 
 
 class ManagerAgent:
@@ -727,11 +737,21 @@ class ManagerAgent:
     #  Auto-évaluation de la qualité d'un résultat                        #
     # ------------------------------------------------------------------ #
 
+    # Agents dont la réussite = création/écriture d'un fichier local
+    _FILE_CREATION_AGENTS: frozenset = frozenset({"excel", "text", "filesystem"})
+    # Mots-clés qui confirment qu'une action sur fichier local a réussi
+    _FILE_SUCCESS_KEYWORDS: tuple = (
+        "créé", "created", "enregistré", "saved", "écrit", "written",
+        "sauvegardé", "fichier", ".xlsx", ".csv", ".txt", ".json",
+        "lignes écrites", "rows written", "workbook", "classeur",
+    )
+
     def _evaluate_agent_result(
         self,
         task: str,
         agent_type: str,
         answer: str,
+        sub_result: Optional[Dict] = None,
     ) -> Dict[str, Any]:
         """
         Appel LLM rapide pour noter la qualité de la réponse d'un agent.
@@ -741,15 +761,44 @@ class ManagerAgent:
         if not self._eval_enabled:
             return default
 
+        answer_str = str(answer).strip()
+
+        # Heuristique agents fichiers : si la réponse confirme une création/écriture locale → OK
+        if agent_type.lower() in self._FILE_CREATION_AGENTS:
+            answer_lower = answer_str.lower()
+            # Inspecte aussi le résumé et les findings du sous-agent si disponibles
+            extra = ""
+            if sub_result:
+                extra = (
+                    str(sub_result.get("summary", ""))
+                    + str(sub_result.get("findings", ""))
+                ).lower()
+            if any(kw in answer_lower or kw in extra for kw in self._FILE_SUCCESS_KEYWORDS):
+                return default
+
         # Heuristique rapide : si la réponse est longue et non vide → OK probable
-        if len(str(answer).strip()) > 300:
+        if len(answer_str) > 300:
             return default
+
+        # Récupère les critères de succès de la pré-analyse pour contextualiser l'évaluation
+        success_criteria = self.memory.get_fact("success_criteria") or ""
+
+        # Enrichit l'évaluation avec les données du sous-agent si disponibles
+        eval_answer = answer_str
+        if sub_result:
+            summary = sub_result.get("summary", "")
+            findings_raw = sub_result.get("findings", {})
+            if summary and summary not in eval_answer:
+                eval_answer = f"{eval_answer}\n[Résumé agent]: {summary}"
+            if findings_raw:
+                eval_answer = f"{eval_answer}\n[Findings]: {str(findings_raw)[:500]}"
 
         try:
             prompt = _EVALUATION_PROMPT.format(
                 task=task,
                 agent_type=agent_type,
-                answer=str(answer)[:3000],
+                answer=eval_answer[:3000],
+                success_criteria=success_criteria or "Non spécifié",
             )
             messages = [
                 {
@@ -859,7 +908,7 @@ class ManagerAgent:
 
         # --- Auto-évaluation + retry ---
         if _retry < self._eval_max_retries:
-            eval_res = self._evaluate_agent_result(task, agent_type, answer)
+            eval_res = self._evaluate_agent_result(task, agent_type, answer, sub_result=sub_result)
             score = float(eval_res.get("score", 1.0))
             if eval_res.get("retry") and score < self._eval_threshold:
                 hint = eval_res.get("retry_hint", "")
@@ -875,14 +924,13 @@ class ManagerAgent:
                     f"Amélioration requise : {hint}"
                 ).strip()
 
-                # Stocke l'évaluation dans la mémoire avant le retry
-                with self._sub_agent_lock:
-                    self.memory.store_fact(
-                        f"eval_{agent_type}_retry{_retry}",
-                        {"score": score, "missing": missing, "hint": hint},
-                        source="evaluator",
-                        category="finding",
-                    )
+                # NOTE : on ne stocke PAS l'échec intermédiaire dans la mémoire du manager
+                # car cela polluerait le contexte LLM et déclencherait une nouvelle boucle
+                # après que le retry ait réussi. On logue uniquement.
+                self.logger.info(
+                    f"  [eval] Retry interne déclenché pour '{agent_type}' "
+                    f"(score={score:.2f}, missing={missing})"
+                )
 
                 return self._dispatch_agent(
                     agent_type=agent_type,
