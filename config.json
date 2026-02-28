@@ -38,8 +38,20 @@
   "agents": {
     "max_steps":         20,
     "reflection_interval": 5,
-    "parallel_agents":   1,
+    "parallel_agents":   4,
     "result_dir":        "./results"
+  },
+
+  "orchestration": {
+    "_comment": "Paramètres de l'orchestrateur multi-agents",
+    "eval_enabled":        true,
+    "_comment_eval":       "Active l'auto-évaluation de la qualité des réponses des sous-agents",
+    "eval_threshold":      0.6,
+    "_comment_threshold":  "Score minimal (0-1) en dessous duquel un retry est déclenché",
+    "eval_max_retries":    1,
+    "_comment_retries":    "Nombre max de relances automatiques par agent si qualité insuffisante",
+    "parallel_max_workers": 4,
+    "_comment_workers":    "Nombre maximum de threads pour le dispatch parallèle"
   },
 
   "langgraph": {
