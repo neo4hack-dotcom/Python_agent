@@ -66,6 +66,108 @@ from utils.prompts    import MANAGER_MISSION
 #  Registre global de tous les agents                                          #
 # --------------------------------------------------------------------------- #
 
+# Descriptions détaillées utilisées par le Manager pour choisir le bon agent.
+# Chaque valeur explique les capacités et les cas d'usage typiques de l'agent.
+# Ces descriptions peuvent être surchargées via agent_overrides[key]["description"] dans config.json.
+AGENT_DESCRIPTIONS: Dict[str, str] = {
+    "analyst": (
+        "Analyse statistique approfondie des données en base de données. "
+        "Calcule KPIs, moyennes, médianes, percentiles, tendances temporelles et comparaisons entre groupes. "
+        "À choisir quand : 'Quelle est la tendance des ventes ?', 'Calcule la moyenne par catégorie', "
+        "'Analyse l'évolution sur les 30 derniers jours', 'Quels sont les KPIs principaux ?'."
+    ),
+    "quality": (
+        "Audit complet de la qualité des données : valeurs nulles, doublons, outliers, "
+        "incohérences de types et violations de contraintes. "
+        "À choisir quand : 'Vérifie la qualité de la table X', 'Y a-t-il des doublons dans les commandes ?', "
+        "'Trouve les valeurs manquantes ou aberrantes', 'Rapport de qualité sur ce dataset'."
+    ),
+    "pattern": (
+        "Découverte de patterns cachés dans les données : corrélations entre colonnes, segmentation en clusters, "
+        "anomalies statistiques, distributions et séquences répétitives. "
+        "À choisir quand : 'Quels facteurs sont corrélés aux achats ?', 'Identifie des comportements anormaux', "
+        "'Trouve des groupes d'utilisateurs similaires', 'Analyse de la distribution des valeurs'."
+    ),
+    "query": (
+        "Construction et optimisation de requêtes SQL complexes pour ClickHouse ou Oracle. "
+        "Génère du SQL performant, optimise les jointures et index, reformule des requêtes lentes. "
+        "À choisir quand : 'Écris une requête SQL pour...', 'Optimise cette requête', "
+        "'Comment écrire ce calcul en SQL ?', 'Génère du SQL pour ce besoin métier'."
+    ),
+    "excel": (
+        "Création, lecture et modification de classeurs Excel (.xlsx) avec openpyxl. "
+        "Peut créer des feuilles, des formules, des graphiques, des styles et des mises en forme conditionnelles. "
+        "À choisir quand : 'Génère un rapport Excel', 'Ajoute une feuille à ce fichier', "
+        "'Crée un tableau avec des formules', 'Exporte ces données vers Excel avec mise en forme'."
+    ),
+    "text": (
+        "Création, lecture et édition de fichiers texte : .txt, .csv, .log, .json, .xml, .md "
+        "via la bibliothèque standard Python (pas de dépendances externes). "
+        "À choisir quand : 'Sauvegarde ces données en CSV', 'Lis ce fichier JSON', "
+        "'Crée un rapport en Markdown', 'Écris dans un fichier texte', 'Modifie ce fichier de configuration'."
+    ),
+    "filesystem": (
+        "Navigation cross-plateforme des systèmes de fichiers : recherche de fichiers par nom, type ou contenu, "
+        "analyse de répertoires, lecture de fichiers, ingestion directe vers ClickHouse. "
+        "À choisir quand : 'Liste les fichiers dans /data', 'Trouve tous les CSV modifiés aujourd'hui', "
+        "'Charge ce fichier dans ClickHouse', 'Quelle est la taille de ce dossier ?', "
+        "'Recherche récursive d'un fichier contenant ce texte'."
+    ),
+    "web": (
+        "Navigation internet, recherche sur moteurs de recherche, extraction de contenu de pages web, "
+        "scraping et remplissage de formulaires. "
+        "À choisir quand : 'Recherche les actualités sur...', 'Extrais les prix de ce site', "
+        "'Visite cette URL et résume le contenu', 'Remplis ce formulaire web', 'Scrape ces données en ligne'."
+    ),
+    "sql_analyst": (
+        "Expert SQL ClickHouse senior : génère des requêtes optimisées avec les fonctions natives ClickHouse "
+        "(uniqHLL12, quantileTDigest, groupArray, combinators…), effectue un EXPLAIN preflight et corrige "
+        "automatiquement les erreurs de syntaxe ClickHouse. "
+        "À choisir quand : 'Écris une requête ClickHouse optimisée pour...', "
+        "'Utilise les fonctions natives CH', analyse ClickHouse avancée nécessitant des optimisations moteur."
+    ),
+    "clickhouse_generic": (
+        "Analyste ClickHouse polyvalent capable de décomposer des tâches complexes en sous-requêtes "
+        "via un graphe d'exécution (DAG). Explore le schéma, enchaîne des analyses multi-tables, "
+        "adapte sa stratégie en cours de route. "
+        "À choisir quand : 'Analyse complexe en plusieurs étapes', 'Croise plusieurs tables ClickHouse', "
+        "'Exploration globale du schéma avec analyses multiples', tâche d'analyse ouverte sur ClickHouse."
+    ),
+    "clickhouse_table_manager": (
+        "Administrateur DDL ClickHouse avec garde-fous intégrés : choisit le bon moteur de stockage "
+        "(MergeTree, ReplicatedMergeTree, AggregatingMergeTree…), configure TTL, ORDER BY, PARTITION BY. "
+        "DROP et TRUNCATE toujours bloqués. "
+        "À choisir quand : 'Crée une table pour stocker ces données', 'Modifie le schéma de la table X', "
+        "'Ajoute une colonne', 'Conseille sur la meilleure structure de table ClickHouse'."
+    ),
+    "clickhouse_writer": (
+        "Agent DML sécurisé pour l'écriture dans ClickHouse. Limité aux opérations INSERT avec "
+        "préfixe de table obligatoire (agent_*). Vérifie la compatibilité des schémas avant insertion. "
+        "À choisir quand : 'Insère ces données dans ClickHouse', "
+        "'Charge ce dataset dans la table agent_X', 'Écris les résultats de l'analyse dans ClickHouse'."
+    ),
+    "clickhouse_specific": (
+        "Exécuteur de templates ClickHouse paramétrés. Connaît les templates intégrés P1–P5 "
+        "(P1: DAU, P2: funnel de conversion, P3: rétention, P4: top événements, P5: percentiles de sessions) "
+        "et les templates personnalisés définis dans la configuration. "
+        "À choisir quand : 'Calcule le DAU', 'Analyse le funnel de conversion', "
+        "'Taux de rétention sur 30 jours', 'Exécute le template X avec les paramètres Y'."
+    ),
+    "text_to_sql_translator": (
+        "Traducteur langage naturel → SQL ClickHouse, alimenté par une couche sémantique configurable "
+        "(termes métier, alias de colonnes, formules KPI comme DAU, ARPU, CVR). "
+        "Corrige automatiquement les erreurs de syntaxe. "
+        "À choisir quand : 'Transforme cette phrase en SQL', 'Requête pour [description business]', "
+        "'Comment exprimer cela en SQL ClickHouse ?', traduction d'un besoin métier en requête."
+    ),
+    "rag_json": (
+        "Moteur de recherche sémantique par similarité TF-IDF dans une base de connaissances JSON locale. "
+        "Retrouve les entrées les plus pertinentes par rapport à une requête en langage naturel. "
+        "À choisir quand : 'Recherche dans la documentation', 'Que signifie ce terme selon la base de connaissance ?', "
+        "'Trouve les entrées similaires à...', toute requête portant sur le fichier JSON de connaissances configuré."
+    ),
+}
+
 AGENT_REGISTRY: Dict[str, Any] = {
     # Agents d'analyse de données (BaseAgent)
     "analyst":   AnalystAgent,
@@ -99,27 +201,12 @@ _CH_SPECIALIST_AGENTS = {
 #  Prompts internes                                                            #
 # --------------------------------------------------------------------------- #
 
-_ORCHESTRATION_PLAN_PROMPT = """Tu es un orchestrateur d'agents IA expert. Analyse la tâche suivante et génère un plan d'exécution optimal.
+_ORCHESTRATION_PLAN_PROMPT_TEMPLATE = """Tu es un orchestrateur d'agents IA expert. Analyse la tâche suivante et génère un plan d'exécution optimal.
 
 TÂCHE : {task}
 
 AGENTS DISPONIBLES :
-- analyst           : Analyse statistique, tendances, KPIs sur des données en base de données
-- quality           : Audit qualité des données (nulls, doublons, outliers)
-- pattern           : Découverte de patterns, corrélations, anomalies dans les données
-- query             : Construction et optimisation de requêtes SQL complexes
-- excel             : Création, lecture, modification de fichiers Excel (.xlsx)
-- text              : Création, lecture, édition de fichiers texte (.txt .csv .log .json)
-- filesystem        : Navigation de répertoires, recherche de fichiers, lecture de contenu
-- web               : Recherche internet, navigation web, scraping, remplissage de formulaires
-- sql_analyst       : Expert SQL ClickHouse avancé, optimisation de requêtes
-- clickhouse_generic: Analyses ClickHouse complexes avec décomposition en DAG
-- clickhouse_table_manager: Création/modification de schémas de tables ClickHouse (DDL)
-- clickhouse_writer : Insertion de données dans ClickHouse (DML/INSERT)
-- clickhouse_specific: Exécution de templates ClickHouse (DAU, funnel, rétention)
-- text_to_sql_translator: Traduction langage naturel → SQL ClickHouse
-- rag_json          : Recherche sémantique dans une base de connaissances JSON
-
+{agent_descriptions}
 STRATÉGIES :
 - "single"     : un seul agent suffit
 - "parallel"   : plusieurs sous-tâches INDÉPENDANTES → exécuter simultanément
@@ -355,13 +442,47 @@ class ManagerAgent:
     #  Pré-analyse intelligente du routage et plan d'orchestration         #
     # ------------------------------------------------------------------ #
 
+    def _build_orchestration_prompt(self, task: str) -> str:
+        """
+        Construit le prompt d'orchestration en injectant les descriptions des agents.
+        Priorité : description dans agent_overrides (config) > AGENT_DESCRIPTIONS par défaut.
+        Les agents personnalisés sont également inclus.
+        """
+        lines = []
+
+        # Agents natifs
+        for agent_key in AGENT_REGISTRY:
+            override_desc = self._agent_overrides.get(agent_key, {}).get("description", "")
+            description = override_desc or AGENT_DESCRIPTIONS.get(agent_key, "")
+            lines.append(f"- {agent_key:<28}: {description}")
+
+        # Agents RAG (non dans AGENT_REGISTRY mais disponibles)
+        rag_key = "rag_json"
+        if rag_key not in AGENT_REGISTRY:
+            override_desc = self._agent_overrides.get(rag_key, {}).get("description", "")
+            description = override_desc or AGENT_DESCRIPTIONS.get(rag_key, "")
+            lines.append(f"- {rag_key:<28}: {description}")
+
+        # Agents personnalisés
+        for ca in self._custom_agents:
+            key = ca.get("name", "").strip().lower()
+            if key:
+                desc = ca.get("specialization", "") or ca.get("mission", "")[:120]
+                lines.append(f"- {key:<28}: {desc}")
+
+        agent_descriptions = "\n".join(lines) + "\n"
+        return _ORCHESTRATION_PLAN_PROMPT_TEMPLATE.format(
+            task=task,
+            agent_descriptions=agent_descriptions,
+        )
+
     def _pre_analyze_task(self, task: str) -> Tuple[str, Optional[Dict]]:
         """
         Appel LLM rapide pour identifier la stratégie d'exécution optimale.
         Retourne (routing_hint: str, orchestration_plan: dict | None).
         """
         try:
-            prompt = _ORCHESTRATION_PLAN_PROMPT.format(task=task)
+            prompt = self._build_orchestration_prompt(task)
             messages = [
                 {
                     "role": "system",

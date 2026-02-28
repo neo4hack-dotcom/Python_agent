@@ -47,6 +47,12 @@ AGENT_INFO: Dict[str, Dict] = {
     "analyst": {
         "display": "📊 Analyst",
         "description": "Analyse de données approfondie, statistiques, tendances",
+        "detailed_description": (
+            "Analyse statistique approfondie des données en base de données. "
+            "Calcule KPIs, moyennes, médianes, percentiles, tendances temporelles et comparaisons entre groupes. "
+            "À choisir quand : 'Quelle est la tendance des ventes ?', 'Calcule la moyenne par catégorie', "
+            "'Analyse l'évolution sur les 30 derniers jours', 'Quels sont les KPIs principaux ?'."
+        ),
         "default_max_steps": 15,
         "default_reflection": 5,
         "category": "base",
@@ -55,6 +61,12 @@ AGENT_INFO: Dict[str, Dict] = {
     "quality": {
         "display": "🔍 Quality",
         "description": "Audit qualité des données (nulls, doublons, outliers)",
+        "detailed_description": (
+            "Audit complet de la qualité des données : valeurs nulles, doublons, outliers, "
+            "incohérences de types et violations de contraintes. "
+            "À choisir quand : 'Vérifie la qualité de la table X', 'Y a-t-il des doublons dans les commandes ?', "
+            "'Trouve les valeurs manquantes ou aberrantes', 'Rapport de qualité sur ce dataset'."
+        ),
         "default_max_steps": 15,
         "default_reflection": 5,
         "category": "base",
@@ -63,6 +75,12 @@ AGENT_INFO: Dict[str, Dict] = {
     "pattern": {
         "display": "🔮 Pattern",
         "description": "Découverte de patterns, corrélations, anomalies",
+        "detailed_description": (
+            "Découverte de patterns cachés dans les données : corrélations entre colonnes, segmentation en clusters, "
+            "anomalies statistiques, distributions et séquences répétitives. "
+            "À choisir quand : 'Quels facteurs sont corrélés aux achats ?', 'Identifie des comportements anormaux', "
+            "'Trouve des groupes d'utilisateurs similaires', 'Analyse de la distribution des valeurs'."
+        ),
         "default_max_steps": 15,
         "default_reflection": 5,
         "category": "base",
@@ -71,6 +89,12 @@ AGENT_INFO: Dict[str, Dict] = {
     "query": {
         "display": "⚡ Query",
         "description": "Construction et optimisation SQL",
+        "detailed_description": (
+            "Construction et optimisation de requêtes SQL complexes pour ClickHouse ou Oracle. "
+            "Génère du SQL performant, optimise les jointures et index, reformule des requêtes lentes. "
+            "À choisir quand : 'Écris une requête SQL pour...', 'Optimise cette requête', "
+            "'Comment écrire ce calcul en SQL ?', 'Génère du SQL pour ce besoin métier'."
+        ),
         "default_max_steps": 15,
         "default_reflection": 5,
         "category": "base",
@@ -79,6 +103,13 @@ AGENT_INFO: Dict[str, Dict] = {
     "sql_analyst": {
         "display": "🐘 SQL Analyst",
         "description": "Expert SQL ClickHouse senior avec EXPLAIN preflight",
+        "detailed_description": (
+            "Expert SQL ClickHouse senior : génère des requêtes optimisées avec les fonctions natives ClickHouse "
+            "(uniqHLL12, quantileTDigest, groupArray, combinators…), effectue un EXPLAIN preflight et corrige "
+            "automatiquement les erreurs. "
+            "À choisir quand : 'Écris une requête ClickHouse optimisée pour...', "
+            "'Utilise les fonctions natives CH', analyse ClickHouse avancée nécessitant des optimisations moteur."
+        ),
         "default_max_steps": 20,
         "default_reflection": 5,
         "category": "clickhouse",
@@ -87,6 +118,13 @@ AGENT_INFO: Dict[str, Dict] = {
     "clickhouse_generic": {
         "display": "🔄 CH Generic",
         "description": "Analyste ClickHouse polyvalent avec décomposition DAG",
+        "detailed_description": (
+            "Analyste ClickHouse polyvalent capable de décomposer des tâches complexes en sous-requêtes "
+            "via un graphe d'exécution (DAG). Explore le schéma, enchaîne des analyses multi-tables, "
+            "adapte sa stratégie en cours de route. "
+            "À choisir quand : 'Analyse complexe en plusieurs étapes', 'Croise plusieurs tables ClickHouse', "
+            "'Exploration globale du schéma avec analyses multiples', tâche d'analyse ouverte sur ClickHouse."
+        ),
         "default_max_steps": 20,
         "default_reflection": 5,
         "category": "clickhouse",
@@ -95,6 +133,13 @@ AGENT_INFO: Dict[str, Dict] = {
     "clickhouse_table_manager": {
         "display": "🗂️ Table Manager",
         "description": "Administrateur DDL ClickHouse (CREATE/ALTER avec garde-fous)",
+        "detailed_description": (
+            "Administrateur DDL ClickHouse avec garde-fous intégrés : choisit le bon moteur de stockage "
+            "(MergeTree, ReplicatedMergeTree, AggregatingMergeTree…), configure TTL, ORDER BY, PARTITION BY. "
+            "DROP et TRUNCATE toujours bloqués. "
+            "À choisir quand : 'Crée une table pour stocker ces données', 'Modifie le schéma de la table X', "
+            "'Ajoute une colonne', 'Conseille sur la meilleure structure de table ClickHouse'."
+        ),
         "default_max_steps": 15,
         "default_reflection": 5,
         "category": "clickhouse",
@@ -103,6 +148,12 @@ AGENT_INFO: Dict[str, Dict] = {
     "clickhouse_writer": {
         "display": "✍️ Writer",
         "description": "DML sécurisé — INSERT restreint aux tables agent_*",
+        "detailed_description": (
+            "Agent DML sécurisé pour l'écriture dans ClickHouse. Limité aux opérations INSERT avec "
+            "préfixe de table obligatoire (agent_*). Vérifie la compatibilité des schémas avant insertion. "
+            "À choisir quand : 'Insère ces données dans ClickHouse', "
+            "'Charge ce dataset dans la table agent_X', 'Écris les résultats de l'analyse dans ClickHouse'."
+        ),
         "default_max_steps": 15,
         "default_reflection": 5,
         "category": "clickhouse",
@@ -111,6 +162,13 @@ AGENT_INFO: Dict[str, Dict] = {
     "clickhouse_specific": {
         "display": "📋 Specific",
         "description": "Exécution de templates paramétrés (P1-P5)",
+        "detailed_description": (
+            "Exécuteur de templates ClickHouse paramétrés. Connaît les templates intégrés P1–P5 "
+            "(P1: DAU, P2: funnel de conversion, P3: rétention, P4: top événements, P5: percentiles de sessions) "
+            "et les templates personnalisés définis dans la configuration. "
+            "À choisir quand : 'Calcule le DAU', 'Analyse le funnel de conversion', "
+            "'Taux de rétention sur 30 jours', 'Exécute le template X avec les paramètres Y'."
+        ),
         "default_max_steps": 15,
         "default_reflection": 5,
         "category": "clickhouse",
@@ -119,6 +177,13 @@ AGENT_INFO: Dict[str, Dict] = {
     "text_to_sql_translator": {
         "display": "🗣️ Text-to-SQL",
         "description": "Traduction langage naturel → SQL ClickHouse optimisé",
+        "detailed_description": (
+            "Traducteur langage naturel → SQL ClickHouse, alimenté par une couche sémantique configurable "
+            "(termes métier, alias de colonnes, formules KPI comme DAU, ARPU, CVR). "
+            "Corrige automatiquement les erreurs de syntaxe. "
+            "À choisir quand : 'Transforme cette phrase en SQL', 'Requête pour [description business]', "
+            "'Comment exprimer cela en SQL ClickHouse ?', traduction d'un besoin métier en requête."
+        ),
         "default_max_steps": 15,
         "default_reflection": 5,
         "category": "clickhouse",
@@ -128,6 +193,12 @@ AGENT_INFO: Dict[str, Dict] = {
     "excel": {
         "display": "📊 Excel",
         "description": "Créer, lire et modifier des fichiers Excel (.xlsx) — formules, formats, feuilles",
+        "detailed_description": (
+            "Création, lecture et modification de classeurs Excel (.xlsx) avec openpyxl. "
+            "Peut créer des feuilles, des formules, des graphiques, des styles et des mises en forme conditionnelles. "
+            "À choisir quand : 'Génère un rapport Excel', 'Ajoute une feuille à ce fichier', "
+            "'Crée un tableau avec des formules', 'Exporte ces données vers Excel avec mise en forme'."
+        ),
         "default_max_steps": 25,
         "default_reflection": 5,
         "category": "file",
@@ -136,6 +207,12 @@ AGENT_INFO: Dict[str, Dict] = {
     "textfile": {
         "display": "📝 TextFile",
         "description": "Créer, lire et modifier des fichiers texte (.txt, .csv, .log, .json…)",
+        "detailed_description": (
+            "Création, lecture et édition de fichiers texte : .txt, .csv, .log, .json, .xml, .md "
+            "via la bibliothèque standard Python (pas de dépendances). "
+            "À choisir quand : 'Sauvegarde ces données en CSV', 'Lis ce fichier JSON', "
+            "'Crée un rapport en Markdown', 'Écris dans un fichier texte', 'Modifie ce fichier de configuration'."
+        ),
         "default_max_steps": 25,
         "default_reflection": 5,
         "category": "file",
@@ -144,6 +221,13 @@ AGENT_INFO: Dict[str, Dict] = {
     "filesystem": {
         "display": "🗂️ FileSystem",
         "description": "Navigation, recherche cross-répertoires, ouverture OS, ingestion ClickHouse",
+        "detailed_description": (
+            "Navigation cross-plateforme des systèmes de fichiers : recherche de fichiers par nom, type ou contenu, "
+            "analyse de répertoires, lecture de fichiers, ingestion directe vers ClickHouse. "
+            "À choisir quand : 'Liste les fichiers dans /data', 'Trouve tous les CSV modifiés aujourd'hui', "
+            "'Charge ce fichier dans ClickHouse', 'Quelle est la taille de ce dossier ?', "
+            "'Recherche récursive d'un fichier contenant ce texte'."
+        ),
         "default_max_steps": 30,
         "default_reflection": 5,
         "category": "file",
@@ -153,6 +237,12 @@ AGENT_INFO: Dict[str, Dict] = {
     "rag_json": {
         "display": "🔎 RAG JSON",
         "description": "Recherche par similarité TF-IDF dans une base de connaissances JSON",
+        "detailed_description": (
+            "Moteur de recherche sémantique par similarité TF-IDF dans une base de connaissances JSON locale. "
+            "Retrouve les entrées les plus pertinentes par rapport à une requête en langage naturel. "
+            "À choisir quand : 'Recherche dans la documentation', 'Que signifie ce terme selon la base de connaissance ?', "
+            "'Trouve les entrées similaires à...', toute requête portant sur le fichier JSON de connaissances configuré."
+        ),
         "default_max_steps": 15,
         "default_reflection": 5,
         "category": "rag",
@@ -563,25 +653,27 @@ def action_save_agents(
 def action_save_agent_overrides(*values) -> str:
     """
     Save per-agent overrides.
-    Values are interleaved as: enabled, max_steps, reflection_interval — for each agent key.
+    Values are interleaved as: enabled, max_steps, reflection_interval, description — for each agent key.
     """
     keys = list(AGENT_INFO.keys())
-    # Each agent gets 3 values: enabled, max_steps, reflection_interval
-    if len(values) != len(keys) * 3:
-        return f"❌ Nombre de valeurs incorrect ({len(values)} vs {len(keys) * 3} attendues)."
+    # Each agent gets 4 values: enabled, max_steps, reflection_interval, description
+    if len(values) != len(keys) * 4:
+        return f"❌ Nombre de valeurs incorrect ({len(values)} vs {len(keys) * 4} attendues)."
     try:
         overrides = {}
         for i, key in enumerate(keys):
-            enabled    = bool(values[i * 3])
-            ms         = int(values[i * 3 + 1])
-            ri         = int(values[i * 3 + 2])
+            enabled = bool(values[i * 4])
+            ms      = int(values[i * 4 + 1])
+            ri      = int(values[i * 4 + 2])
+            desc    = str(values[i * 4 + 3]).strip()
             overrides[key] = {
                 "enabled":             enabled,
                 "max_steps":           ms,
                 "reflection_interval": ri,
+                "description":         desc,
             }
         save_config({"agent_overrides": overrides})
-        return "✅ Configuration individuelle des agents sauvegardée."
+        return "✅ Configuration individuelle des agents sauvegardée (descriptions incluses)."
     except Exception as e:
         return f"❌ Erreur : {e}"
 
@@ -1401,12 +1493,19 @@ def build_ui() -> "gr.Blocks":
                     default_enabled    = ov.get("enabled", True)
                     default_ms         = ov.get("max_steps", info["default_max_steps"])
                     default_ri         = ov.get("reflection_interval", info["default_reflection"])
+                    default_desc       = ov.get("description", info.get("detailed_description", info["description"]))
 
                     try:
                         with gr.Accordion(
                             label=f"{info['display']} — {info['description']}",
                             open=False,
                         ):
+                            w_desc = gr.Textbox(
+                                value=default_desc,
+                                label="📝 Description (utilisée par le Manager pour choisir cet agent)",
+                                lines=3,
+                                info="Modifiez cette description pour affiner le choix automatique du Manager.",
+                            )
                             with gr.Row():
                                 w_enabled = gr.Checkbox(
                                     value=default_enabled,
@@ -1434,12 +1533,13 @@ def build_ui() -> "gr.Blocks":
                     except Exception:
                         # Fallback if Accordion not available
                         gr.Markdown(f"**{info['display']}** — {info['description']}")
+                        w_desc = gr.Textbox(value=default_desc, label="Description", lines=2)
                         with gr.Row():
                             w_enabled = gr.Checkbox(value=default_enabled, label="Activé", scale=1)
                             w_ms = gr.Number(**_kw(gr.Number, value=default_ms, label="Étapes max", precision=0, scale=1))
                             w_ri = gr.Number(**_kw(gr.Number, value=default_ri, label="Intervalle réflexion", precision=0, scale=1))
 
-                    per_agent_inputs.extend([w_enabled, w_ms, w_ri])
+                    per_agent_inputs.extend([w_enabled, w_ms, w_ri, w_desc])
 
                 btn_save_overrides  = gr.Button(**_kw(gr.Button, value="💾 Sauvegarder la configuration des agents", variant="primary"))
                 overrides_status    = gr.Markdown(**_kw(gr.Markdown, value="", elem_classes=["status-box"]))
