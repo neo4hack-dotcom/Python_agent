@@ -790,7 +790,7 @@ class WebToolExecutor:
             for f in facts
         ]
 
-    def _tool_think(self, reasoning: str) -> str:
+    def _tool_think(self, reasoning: str = "") -> str:
         return f"[RAISONNEMENT] {reasoning}"
 
     def _tool_final_answer(self, answer: str, summary: str = "") -> Dict[str, str]:
