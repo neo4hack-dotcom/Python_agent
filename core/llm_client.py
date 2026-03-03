@@ -102,6 +102,13 @@ class LLMClient:
         try:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
+            # Fallback: some servers return SSE streaming format even when
+            # stream=false is requested.  Reassemble into a regular response.
+            if "data:" in raw:
+                try:
+                    return self._parse_sse(raw)
+                except Exception:
+                    pass
             raise LLMError(
                 f"Non-JSON response from LLM at {url}: {raw[:300]}"
             ) from exc
@@ -113,6 +120,7 @@ class LLMClient:
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "stream": False,
         }
         if stop:
             payload["stop"] = stop
@@ -134,6 +142,49 @@ class LLMClient:
         }
         result = self._post(url, payload)
         return result.get("message", {}).get("content", "").strip()
+
+    @staticmethod
+    def _parse_sse(raw: str) -> dict:
+        """Reassemble a Server-Sent Events (streaming) response into a regular
+        chat-completion dict, so callers never have to deal with SSE format."""
+        content_parts: List[str] = []
+        last_chunk: Optional[dict] = None
+
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            last_chunk = chunk
+            choices = chunk.get("choices") or []
+            if choices:
+                delta = choices[0].get("delta") or {}
+                content_parts.append(delta.get("content") or "")
+
+        if last_chunk is None:
+            raise LLMError("SSE stream contained no parseable data chunks")
+
+        finish_reason = "stop"
+        if last_chunk.get("choices"):
+            finish_reason = last_chunk["choices"][0].get("finish_reason") or "stop"
+
+        return {
+            "id": last_chunk.get("id", ""),
+            "model": last_chunk.get("model", ""),
+            "object": "chat.completion",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "".join(content_parts)},
+                "finish_reason": finish_reason,
+            }],
+            "usage": last_chunk.get("usage") or {},
+        }
 
     @staticmethod
     def _extract_json(text: str) -> Optional[Any]:
