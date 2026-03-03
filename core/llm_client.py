@@ -87,12 +87,24 @@ class LLMClient:
 
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw = resp.read().decode("utf-8")
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
             raise LLMError(f"HTTP {e.code} from LLM: {body}") from e
         except urllib.error.URLError as e:
             raise LLMError(f"Cannot reach LLM at {url}: {e.reason}") from e
+
+        if not raw.strip():
+            raise LLMError(
+                f"Empty response from LLM at {url}. "
+                "Check that the model name is correct and the server is ready."
+            )
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LLMError(
+                f"Non-JSON response from LLM at {url}: {raw[:300]}"
+            ) from exc
 
     def _openai_complete(self, messages: List[Dict], stop: Optional[List[str]] = None) -> str:
         url = self.base_url + (self.custom_endpoint or self._endpoints["openai"])
