@@ -127,7 +127,11 @@ class LLMClient:
 
         result = self._post(url, payload)
         choice = result["choices"][0]
-        return (choice.get("message") or {}).get("content", "").strip()
+        msg = choice.get("message") or {}
+        # Some reasoning models (DeepSeek, QwQ…) set content=null and put the
+        # actual reply in reasoning_content or reasoning.
+        content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning") or ""
+        return content.strip()
 
     def _ollama_complete(self, messages: List[Dict]) -> str:
         url = self.base_url + self._endpoints["ollama"]
@@ -141,7 +145,9 @@ class LLMClient:
             },
         }
         result = self._post(url, payload)
-        return result.get("message", {}).get("content", "").strip()
+        msg = result.get("message") or {}
+        content = msg.get("content") or msg.get("reasoning_content") or msg.get("reasoning") or ""
+        return content.strip()
 
     @staticmethod
     def _parse_sse(raw: str) -> dict:
